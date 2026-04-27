@@ -1,0 +1,67 @@
+# agent-policy-gateway
+
+A policy enforcement and information-flow-control (IFC) gateway for AI agent tool calls.
+
+> **Status:** Pre-alpha. Active development. See [`ROADMAP.md`](./ROADMAP.md).
+
+## Why
+
+Autonomous AI agents increasingly call tools — read files, query databases, browse the web,
+send messages. When data from an untrusted source (e.g. a web page) flows into a sensitive
+sink (e.g. an email send), bad things happen: prompt injection becomes prompt *exfiltration*,
+indirect commands turn into real-world actions, and audit trails are missing.
+
+Most existing guardrails focus on *LLM output filtering*. `agent-policy-gateway` instead sits
+between the agent and its tools and treats the problem the way operating systems treat untrusted
+input: with **policy enforcement** and **taint tracking** across calls.
+
+## What it does
+
+1. **Policy enforcement.** Allow / deny / quota / human-in-the-loop rules per tool, per
+   resource, per agent identity. Policies are declarative (YAML) and composable.
+2. **Taint tracking.** Each tool call produces tainted output (sources: web, user-uploaded
+   docs, external API). Taint propagates through subsequent calls. Policies can refuse a
+   sensitive sink (e.g. `send_email`) if its arguments carry high-taint sources.
+3. **Audit log.** Every call, decision, and taint label is recorded in an append-only log
+   suitable for incident response and red-team review.
+4. **Multi-protocol adapters.** Wraps tool catalogs from MCP, OpenAI function calling,
+   Anthropic tool use — same policy language across them.
+
+## Threat model
+
+We assume the LLM itself is **not** trusted to decide what tool calls are safe. Adversarial
+content can reach the model via any tool output, and the model may then attempt unsafe calls.
+The gateway is the trusted reference monitor; the model is policy-controlled, not policy-aware.
+
+## Non-goals
+
+- Not a content filter. We do not classify text as "harmful." This is about *flow*.
+- Not a sandbox for tool *implementations*. Tools run as they always did; we mediate access.
+- Not a replacement for human review of high-stakes actions. We make review tractable.
+
+## Quick start
+
+```python
+from agent_policy_gateway import Gateway, Policy
+
+gw = Gateway.from_yaml("policies/my-policy.yaml")
+
+@gw.wrap_tool(name="web_search", taint_sources={"web"})
+def web_search(query: str) -> str:
+    ...
+
+@gw.wrap_tool(name="send_email", taint_sinks={"web": "deny"})
+def send_email(to: str, body: str) -> None:
+    ...
+
+# Now the agent calls these wrappers; the gateway enforces policy and tracks taint.
+```
+
+## License
+
+Apache-2.0. See [`LICENSE`](./LICENSE).
+
+## Contributing
+
+This project is built incrementally and in public. See [`ROADMAP.md`](./ROADMAP.md) for what's
+next, and [`docs/design.md`](./docs/design.md) for the architecture.
