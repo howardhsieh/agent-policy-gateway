@@ -54,6 +54,6 @@ Each item must include acceptance criteria so the daily task knows when it's don
 
 - **R1. Core data model** — completed 2026-04-28. Added `core.py` with `TaintLabel`, `ToolCall`, `Verdict`, `Decision`, plus `to_json` / `from_json`. 34 tests in `tests/test_core.py`, all green; ruff clean. Commit `0877c07`.
 
-- **R2. Taint propagation algebra** — completed 2026-04-28. Added `taint.py` with `join` / `join_all`, `subsumes`, `flows_to`, `ToolTaintSpec`, and `propagate` (`output = ((∨ inputs) ∨ adds) \ declassifies`). 31 new tests in `tests/test_taint.py` covering lattice algebra, propagation rules, and a worked `web_search → summarize → send_email` exfiltration refusal. 65/65 tests green; ruff clean.
+- **R2. Taint propagation algebra** — completed 2026-04-28. Added `taint.py` with `join` / `join_all`, `subsumes`, `flows_to`, `ToolTaintSpec`, and `propagate` (`output = ((∨ inputs) ∨ adds) \ declassifies`). 31 new tests in `tests/test_taint.py` covering lattice algebra, propagation rules, and a worked `web_search → summarize → send_email` exfiltration refusal. 65/65 tests green; ruff clean. Commit `fe45868`.
 
 _(More items below as they ship.)_
