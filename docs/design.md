@@ -38,6 +38,19 @@ The model is adversarially-influenced by tool outputs. Anything we ask the model
 self-defense is bypassable. The gateway is outside the model's control surface, so the
 guarantee is structural rather than emergent.
 
+
+## Declassification
+
+Some tools are trusted to *strip* a source label from their output. A vetted PII
+redactor that scrubs identifiers should be allowed to remove the `pii` label;
+without an explicit declassification mechanism, the only escape from a once-tainted
+flow is to refuse it forever, which makes the gateway useless in practice.
+
+We model this as a `ToolTaintSpec(adds, declassifies)`: every call's output label
+is `((∨ inputs) ∨ adds) \ declassifies`. Declassification is a privilege a tool
+declares once and the operator audits; it is intentionally *not* something the
+LLM can request at runtime.
+
 ## Open questions
 
 - Field-level taint inside structured tool outputs.
