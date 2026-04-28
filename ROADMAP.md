@@ -11,12 +11,6 @@ Each item must include acceptance criteria so the daily task knows when it's don
 
 ## Up next
 
-- [ ] **R1. Core data model: `ToolCall`, `TaintLabel`, `Decision`.**
-  - `src/agent_policy_gateway/core.py` defines dataclasses for a tool call, the labels
-    attached to its inputs/outputs, and the gateway's decision (`ALLOW` / `DENY` / `REVIEW`).
-  - Unit tests in `tests/test_core.py` cover construction, equality, and serialization
-    (to/from JSON).
-  - Done when: `pytest tests/test_core.py` passes and coverage on `core.py` is ≥90%.
 
 - [ ] **R2. Taint propagation algebra.**
   - `src/agent_policy_gateway/taint.py` implements label join (`∨`), subsumption (`⊑`),
@@ -66,4 +60,6 @@ Each item must include acceptance criteria so the daily task knows when it's don
 
 ## Done
 
-_(Items move here with completion date and short commit reference.)_
+- **R1. Core data model** — completed 2026-04-28. Added `core.py` with `TaintLabel`, `ToolCall`, `Verdict`, `Decision`, plus `to_json` / `from_json`. 34 tests in `tests/test_core.py`, all green; ruff clean. Commit hash added on push.
+
+_(More items below as they ship.)_
