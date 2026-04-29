@@ -11,11 +11,6 @@ Each item must include acceptance criteria so the daily task knows when it's don
 
 ## Up next
 
-- [ ] **R3. Policy DSL v0 (YAML).**
-  - Schema for declarative policies: rules with selectors (tool name, identity, resource
-    pattern), conditions on taint, and effects (allow/deny/review/rate-limit).
-  - Loader, validator (Pydantic), and 3 example policies under `policies/`.
-
 - [ ] **R4. Reference `Gateway` class and `wrap_tool` decorator.**
   - Synchronous version. The decorator records the call, evaluates policies, propagates
     taint, and writes to the audit log.
@@ -55,5 +50,7 @@ Each item must include acceptance criteria so the daily task knows when it's don
 - **R1. Core data model** — completed 2026-04-28. Added `core.py` with `TaintLabel`, `ToolCall`, `Verdict`, `Decision`, plus `to_json` / `from_json`. 34 tests in `tests/test_core.py`, all green; ruff clean. Commit `0877c07`.
 
 - **R2. Taint propagation algebra** — completed 2026-04-28. Added `taint.py` with `join` / `join_all`, `subsumes`, `flows_to`, `ToolTaintSpec`, and `propagate` (`output = ((∨ inputs) ∨ adds) \ declassifies`). 31 new tests in `tests/test_taint.py` covering lattice algebra, propagation rules, and a worked `web_search → summarize → send_email` exfiltration refusal. 65/65 tests green; ruff clean. Commit `fe45868`.
+
+- **R3. Policy DSL v0 (YAML)** — completed 2026-04-29. Added `policy.py` with frozen Pydantic models `Policy` / `Rule` / `Selector` / `Effect` / `TaintCondition` / `Action`, plus `load_policy` / `load_policy_str` / `load_policies`. Selectors support `fnmatch`-globbed tool and resource names, identity equality, and three-clause taint conditions (`all_of` / `any_of` / `none_of`); effects validate that `rate_limit` requires a positive `limit_per_minute` and other actions reject one. Three example YAML policies under `policies/` (`default.yaml`, `research-agent.yaml`, `strict-pii.yaml`) demonstrate exfiltration prevention, identity-based publish gating, and PII handling. 44 new tests in `tests/test_policy.py` cover schema validation, loader error paths, and first-match behaviour against the example policies. 109/109 tests green; ruff clean. Commit `__HASH__`.
 
 _(More items below as they ship.)_

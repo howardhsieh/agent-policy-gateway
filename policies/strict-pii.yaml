@@ -1,0 +1,39 @@
+version: 1
+name: strict-pii
+description: |
+  Strict policy for handling personally-identifiable information. Any tool
+  call whose input label carries the `pii` source is denied unless the
+  label also carries the `trusted-redactor` source — the marker added by
+  a vetted redaction step that has stripped or masked the PII.
+rules:
+  - id: deny-pii-to-external
+    description: PII must not flow into outbound HTTP without redaction.
+    when:
+      tool: http_*
+      taint:
+        any_of: [pii]
+        none_of: [trusted-redactor]
+    effect:
+      action: deny
+      reason: PII not allowed to leave the system without redaction.
+
+  - id: deny-pii-to-email
+    description: PII must not flow into outbound email without redaction.
+    when:
+      tool: send_email
+      taint:
+        any_of: [pii]
+        none_of: [trusted-redactor]
+    effect:
+      action: deny
+      reason: PII detected in outbound email; refusing send.
+
+  - id: review-pii-to-storage
+    description: Any storage write that touches PII goes to review.
+    when:
+      tool: storage_write
+      taint:
+        any_of: [pii]
+    effect:
+      action: review
+      reason: PII writes require human review before persistence.

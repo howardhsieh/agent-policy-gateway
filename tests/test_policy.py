@@ -1,0 +1,458 @@
+"""Tests for the declarative policy DSL (R3).
+
+Coverage target:
+
+* :class:`TaintCondition` clause semantics (all_of / any_of / none_of,
+  empty condition matches everything, combined clauses).
+* :class:`Selector` matching: tool glob, identity, resource glob, taint
+  condition, empty selector matches everything, ``resource=None`` skips
+  the resource constraint.
+* :class:`Effect` validation: ``rate_limit`` requires
+  ``limit_per_minute`` > 0; other actions reject ``limit_per_minute``.
+* :class:`Rule` / :class:`Policy` validation: non-empty id, unique ids,
+  unsupported version, unknown fields rejected, frozen models.
+* Loader (``load_policy``, ``load_policy_str``): YAML errors, empty
+  files, non-mapping top-level, validation failures all raise
+  :class:`PolicyError` with a helpful message; round-trip via tmp_path.
+* The three example policies under ``policies/`` parse cleanly and
+  exhibit the expected first-match behaviour for representative calls.
+"""
+
+from __future__ import annotations
+
+import textwrap
+from pathlib import Path
+
+import pytest
+from pydantic import ValidationError
+
+from agent_policy_gateway import (
+    Action,
+    Effect,
+    Policy,
+    PolicyError,
+    Rule,
+    Selector,
+    TaintCondition,
+    TaintLabel,
+    ToolCall,
+    load_policy,
+    load_policy_str,
+)
+
+# ---------------------------------------------------------------------------
+# TaintCondition
+# ---------------------------------------------------------------------------
+
+
+class TestTaintCondition:
+    def test_empty_condition_matches_anything(self) -> None:
+        cond = TaintCondition()
+        assert cond.is_empty()
+        assert cond.matches(TaintLabel())
+        assert cond.matches(TaintLabel.of("web", "pii"))
+
+    def test_all_of_requires_every_source(self) -> None:
+        cond = TaintCondition(all_of=("web", "pii"))
+        assert cond.matches(TaintLabel.of("web", "pii"))
+        assert cond.matches(TaintLabel.of("web", "pii", "extra"))
+        assert not cond.matches(TaintLabel.of("web"))
+        assert not cond.matches(TaintLabel.of("pii"))
+        assert not cond.matches(TaintLabel())
+
+    def test_any_of_requires_at_least_one(self) -> None:
+        cond = TaintCondition(any_of=("web", "pii"))
+        assert cond.matches(TaintLabel.of("web"))
+        assert cond.matches(TaintLabel.of("pii"))
+        assert cond.matches(TaintLabel.of("web", "extra"))
+        assert not cond.matches(TaintLabel.of("extra"))
+        assert not cond.matches(TaintLabel())
+
+    def test_none_of_excludes_listed_sources(self) -> None:
+        cond = TaintCondition(none_of=("web",))
+        assert cond.matches(TaintLabel())
+        assert cond.matches(TaintLabel.of("pii"))
+        assert not cond.matches(TaintLabel.of("web"))
+        assert not cond.matches(TaintLabel.of("web", "pii"))
+
+    def test_combined_clauses_all_must_hold(self) -> None:
+        cond = TaintCondition(any_of=("pii",), none_of=("trusted-redactor",))
+        assert cond.matches(TaintLabel.of("pii"))
+        assert not cond.matches(TaintLabel.of("pii", "trusted-redactor"))
+        assert not cond.matches(TaintLabel.of("web"))
+
+
+# ---------------------------------------------------------------------------
+# Selector
+# ---------------------------------------------------------------------------
+
+
+def _call(
+    tool_name: str = "send_email",
+    *,
+    agent_id: str | None = None,
+    label: TaintLabel | None = None,
+) -> ToolCall:
+    return ToolCall(
+        tool_name=tool_name,
+        agent_id=agent_id,
+        input_label=label or TaintLabel(),
+    )
+
+
+class TestSelector:
+    def test_empty_selector_matches_every_call(self) -> None:
+        s = Selector()
+        assert s.matches(_call("anything"))
+        assert s.matches(_call("send_email", agent_id="a", label=TaintLabel.of("web")))
+
+    def test_tool_exact_and_glob(self) -> None:
+        assert Selector(tool="send_email").matches(_call("send_email"))
+        assert not Selector(tool="send_email").matches(_call("send_sms"))
+        assert Selector(tool="send_*").matches(_call("send_sms"))
+        assert Selector(tool="send_*").matches(_call("send_email"))
+        assert not Selector(tool="send_*").matches(_call("read_file"))
+
+    def test_identity_must_match_exactly(self) -> None:
+        s = Selector(identity="agent.research")
+        assert s.matches(_call(agent_id="agent.research"))
+        assert not s.matches(_call(agent_id="agent.other"))
+        assert not s.matches(_call(agent_id=None))
+
+    def test_resource_glob_requires_resource_argument(self) -> None:
+        s = Selector(resource="https://*")
+        assert s.matches(_call(), resource="https://example.com/x")
+        assert not s.matches(_call(), resource="http://example.com/x")
+        # selector says "resource matters", caller passed none -> no match
+        assert not s.matches(_call())
+
+    def test_taint_condition_evaluated(self) -> None:
+        s = Selector(taint=TaintCondition(any_of=("web",)))
+        assert s.matches(_call(label=TaintLabel.of("web")))
+        assert not s.matches(_call(label=TaintLabel()))
+
+    def test_all_fields_must_match_simultaneously(self) -> None:
+        s = Selector(
+            tool="http_*",
+            identity="agent.research",
+            taint=TaintCondition(any_of=("web",)),
+        )
+        good = _call("http_post", agent_id="agent.research", label=TaintLabel.of("web"))
+        assert s.matches(good)
+        # wrong tool
+        assert not s.matches(_call("send_email", agent_id="agent.research",
+                                   label=TaintLabel.of("web")))
+        # wrong identity
+        assert not s.matches(_call("http_post", agent_id="agent.other",
+                                   label=TaintLabel.of("web")))
+        # wrong taint
+        assert not s.matches(_call("http_post", agent_id="agent.research"))
+
+
+# ---------------------------------------------------------------------------
+# Effect
+# ---------------------------------------------------------------------------
+
+
+class TestEffect:
+    def test_allow_deny_review_accept_no_limit(self) -> None:
+        for action in (Action.ALLOW, Action.DENY, Action.REVIEW):
+            Effect(action=action)
+            Effect(action=action, reason="because")
+
+    def test_rate_limit_requires_positive_limit(self) -> None:
+        Effect(action=Action.RATE_LIMIT, limit_per_minute=10)
+        with pytest.raises(ValueError, match="rate_limit effect requires"):
+            Effect(action=Action.RATE_LIMIT)
+        with pytest.raises(ValueError, match="rate_limit effect requires"):
+            Effect(action=Action.RATE_LIMIT, limit_per_minute=0)
+        with pytest.raises(ValueError, match="rate_limit effect requires"):
+            Effect(action=Action.RATE_LIMIT, limit_per_minute=-1)
+
+    def test_non_rate_limit_must_not_set_limit(self) -> None:
+        with pytest.raises(ValueError, match="only allowed for action=rate_limit"):
+            Effect(action=Action.ALLOW, limit_per_minute=10)
+        with pytest.raises(ValueError, match="only allowed for action=rate_limit"):
+            Effect(action=Action.DENY, limit_per_minute=10)
+
+
+# ---------------------------------------------------------------------------
+# Rule + Policy validation
+# ---------------------------------------------------------------------------
+
+
+class TestPolicyValidation:
+    def test_minimal_valid_policy(self) -> None:
+        policy = Policy(
+            name="p",
+            rules=(Rule(id="r1", effect=Effect(action=Action.ALLOW)),),
+        )
+        assert policy.version == 1
+        assert policy.name == "p"
+        assert len(policy.rules) == 1
+
+    def test_rule_id_must_be_nonempty(self) -> None:
+        with pytest.raises(ValueError):
+            Rule(id="", effect=Effect(action=Action.ALLOW))
+        with pytest.raises(ValueError):
+            Rule(id="   ", effect=Effect(action=Action.ALLOW))
+
+    def test_policy_name_must_be_nonempty(self) -> None:
+        with pytest.raises(ValueError):
+            Policy(name="")
+
+    def test_unsupported_version_rejected(self) -> None:
+        with pytest.raises(ValueError, match="unsupported policy version"):
+            Policy(name="p", version=2)
+
+    def test_duplicate_rule_ids_rejected(self) -> None:
+        with pytest.raises(ValueError, match="duplicate rule id"):
+            Policy(
+                name="p",
+                rules=(
+                    Rule(id="dup", effect=Effect(action=Action.ALLOW)),
+                    Rule(id="dup", effect=Effect(action=Action.DENY)),
+                ),
+            )
+
+    def test_models_are_frozen(self) -> None:
+        rule = Rule(id="r", effect=Effect(action=Action.ALLOW))
+        with pytest.raises(ValidationError):
+            rule.id = "other"  # type: ignore[misc]
+
+    def test_unknown_fields_rejected(self) -> None:
+        # extra="forbid" on every model
+        with pytest.raises(ValueError):
+            Selector.model_validate({"tool": "x", "bogus": 1})
+        with pytest.raises(ValueError):
+            TaintCondition.model_validate({"any_of": ["a"], "bogus": 1})
+        with pytest.raises(ValueError):
+            Effect.model_validate({"action": "allow", "bogus": 1})
+
+
+# ---------------------------------------------------------------------------
+# first_match ordering
+# ---------------------------------------------------------------------------
+
+
+class TestFirstMatch:
+    def test_first_matching_rule_wins(self) -> None:
+        policy = Policy(
+            name="p",
+            rules=(
+                Rule(
+                    id="allow-research",
+                    when=Selector(tool="publish_*", identity="agent.research"),
+                    effect=Effect(action=Action.ALLOW),
+                ),
+                Rule(
+                    id="deny-others",
+                    when=Selector(tool="publish_*"),
+                    effect=Effect(action=Action.DENY),
+                ),
+            ),
+        )
+        assert policy.first_match(
+            ToolCall(tool_name="publish_blog", agent_id="agent.research"),
+        ).id == "allow-research"
+        assert policy.first_match(
+            ToolCall(tool_name="publish_blog", agent_id="agent.other"),
+        ).id == "deny-others"
+
+    def test_no_rule_matches_returns_none(self) -> None:
+        policy = Policy(
+            name="p",
+            rules=(
+                Rule(
+                    id="x",
+                    when=Selector(tool="send_email"),
+                    effect=Effect(action=Action.DENY),
+                ),
+            ),
+        )
+        assert policy.first_match(ToolCall(tool_name="other_tool")) is None
+
+
+# ---------------------------------------------------------------------------
+# Loader
+# ---------------------------------------------------------------------------
+
+
+VALID_YAML = textwrap.dedent(
+    """
+    version: 1
+    name: t
+    rules:
+      - id: r1
+        when:
+          tool: send_email
+          taint:
+            any_of: [web]
+        effect:
+          action: deny
+          reason: nope
+    """
+)
+
+
+class TestLoader:
+    def test_load_string(self) -> None:
+        p = load_policy_str(VALID_YAML)
+        assert p.name == "t"
+        assert len(p.rules) == 1
+        assert p.rules[0].effect.action == Action.DENY
+
+    def test_load_file(self, tmp_path: Path) -> None:
+        f = tmp_path / "p.yaml"
+        f.write_text(VALID_YAML, encoding="utf-8")
+        p = load_policy(f)
+        assert p.rules[0].id == "r1"
+
+    def test_invalid_yaml_raises_policy_error(self) -> None:
+        with pytest.raises(PolicyError, match="invalid YAML"):
+            load_policy_str("name: [unclosed")
+
+    def test_empty_file_raises_policy_error(self) -> None:
+        with pytest.raises(PolicyError, match="empty"):
+            load_policy_str("")
+        with pytest.raises(PolicyError, match="empty"):
+            load_policy_str("   \n# only a comment\n")
+
+    def test_top_level_must_be_mapping(self) -> None:
+        with pytest.raises(PolicyError, match="top-level YAML must be a mapping"):
+            load_policy_str("- 1\n- 2\n")
+        with pytest.raises(PolicyError, match="top-level YAML must be a mapping"):
+            load_policy_str("just a string")
+
+    def test_validation_failures_become_policy_error(self) -> None:
+        with pytest.raises(PolicyError):
+            # missing required `name`
+            load_policy_str("version: 1\nrules: []\n")
+        with pytest.raises(PolicyError):
+            # bad effect (rate_limit without limit)
+            load_policy_str(
+                textwrap.dedent(
+                    """
+                    version: 1
+                    name: t
+                    rules:
+                      - id: r1
+                        effect:
+                          action: rate_limit
+                    """
+                )
+            )
+
+    def test_error_message_includes_source_label(self) -> None:
+        with pytest.raises(PolicyError, match="my-source"):
+            load_policy_str("- bad", source="my-source")
+
+
+# ---------------------------------------------------------------------------
+# Example policies under policies/
+# ---------------------------------------------------------------------------
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+POLICIES_DIR = REPO_ROOT / "policies"
+
+
+def test_policies_directory_has_three_examples() -> None:
+    yamls = sorted(POLICIES_DIR.glob("*.yaml"))
+    names = {p.name for p in yamls}
+    assert names == {"default.yaml", "research-agent.yaml", "strict-pii.yaml"}
+
+
+def test_every_example_policy_loads_clean() -> None:
+    for path in sorted(POLICIES_DIR.glob("*.yaml")):
+        policy = load_policy(path)
+        assert isinstance(policy, Policy)
+        assert policy.name
+        assert policy.rules, f"{path.name} has no rules"
+
+
+class TestDefaultPolicy:
+    @pytest.fixture()
+    def policy(self) -> Policy:
+        return load_policy(POLICIES_DIR / "default.yaml")
+
+    def test_web_tainted_email_is_denied(self, policy: Policy) -> None:
+        call = ToolCall(tool_name="send_email", input_label=TaintLabel.of("web"))
+        rule = policy.first_match(call)
+        assert rule is not None and rule.id == "deny-web-to-email"
+        assert rule.effect.action == Action.DENY
+
+    def test_pii_http_post_is_reviewed(self, policy: Policy) -> None:
+        call = ToolCall(tool_name="http_post", input_label=TaintLabel.of("pii"))
+        rule = policy.first_match(call)
+        assert rule is not None and rule.id == "review-pii-egress"
+        assert rule.effect.action == Action.REVIEW
+
+    def test_kb_lookup_is_allowed(self, policy: Policy) -> None:
+        call = ToolCall(tool_name="kb_lookup")
+        rule = policy.first_match(call)
+        assert rule is not None and rule.id == "allow-internal-readers"
+        assert rule.effect.action == Action.ALLOW
+
+    def test_unmentioned_tool_falls_through(self, policy: Policy) -> None:
+        call = ToolCall(tool_name="unrelated_tool")
+        assert policy.first_match(call) is None
+
+
+class TestResearchAgentPolicy:
+    @pytest.fixture()
+    def policy(self) -> Policy:
+        return load_policy(POLICIES_DIR / "research-agent.yaml")
+
+    def test_web_search_is_rate_limited_for_research_agent(self, policy: Policy) -> None:
+        call = ToolCall(tool_name="web_search", agent_id="agent.research")
+        rule = policy.first_match(call)
+        assert rule is not None and rule.effect.action == Action.RATE_LIMIT
+        assert rule.effect.limit_per_minute == 30
+
+    def test_external_post_is_reviewed(self, policy: Policy) -> None:
+        call = ToolCall(tool_name="http_post")
+        rule = policy.first_match(call, resource="https://example.com/x")
+        assert rule is not None and rule.id == "review-external-post"
+
+    def test_publish_allowed_for_research_agent(self, policy: Policy) -> None:
+        call = ToolCall(tool_name="publish_blog", agent_id="agent.research")
+        rule = policy.first_match(call)
+        assert rule is not None and rule.id == "allow-research-publish"
+
+    def test_publish_denied_for_other_agents(self, policy: Policy) -> None:
+        call = ToolCall(tool_name="publish_blog", agent_id="agent.other")
+        rule = policy.first_match(call)
+        assert rule is not None and rule.id == "deny-publish-from-other-agents"
+
+
+class TestStrictPiiPolicy:
+    @pytest.fixture()
+    def policy(self) -> Policy:
+        return load_policy(POLICIES_DIR / "strict-pii.yaml")
+
+    def test_pii_http_post_denied_without_redactor(self, policy: Policy) -> None:
+        call = ToolCall(tool_name="http_post", input_label=TaintLabel.of("pii"))
+        rule = policy.first_match(call)
+        assert rule is not None and rule.id == "deny-pii-to-external"
+
+    def test_redacted_pii_http_post_falls_through(self, policy: Policy) -> None:
+        call = ToolCall(
+            tool_name="http_post",
+            input_label=TaintLabel.of("pii", "trusted-redactor"),
+        )
+        # All deny rules require none_of=[trusted-redactor]; storage_write rule
+        # is the only review one and it's tool-specific. So this should fall
+        # through to None.
+        assert policy.first_match(call) is None
+
+    def test_pii_email_denied(self, policy: Policy) -> None:
+        call = ToolCall(tool_name="send_email", input_label=TaintLabel.of("pii"))
+        rule = policy.first_match(call)
+        assert rule is not None and rule.id == "deny-pii-to-email"
+
+    def test_pii_storage_write_reviewed(self, policy: Policy) -> None:
+        call = ToolCall(tool_name="storage_write", input_label=TaintLabel.of("pii"))
+        rule = policy.first_match(call)
+        assert rule is not None and rule.id == "review-pii-to-storage"
+        assert rule.effect.action == Action.REVIEW

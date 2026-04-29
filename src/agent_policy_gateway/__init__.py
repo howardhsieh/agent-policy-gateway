@@ -8,6 +8,18 @@ from agent_policy_gateway.core import (
     from_json,
     to_json,
 )
+from agent_policy_gateway.policy import (
+    Action,
+    Effect,
+    Policy,
+    PolicyError,
+    Rule,
+    Selector,
+    TaintCondition,
+    load_policies,
+    load_policy,
+    load_policy_str,
+)
 from agent_policy_gateway.taint import (
     ToolTaintSpec,
     flows_to,
@@ -20,7 +32,14 @@ from agent_policy_gateway.taint import (
 __version__ = "0.0.1"
 
 __all__ = [
+    "Action",
     "Decision",
+    "Effect",
+    "Policy",
+    "PolicyError",
+    "Rule",
+    "Selector",
+    "TaintCondition",
     "TaintLabel",
     "ToolCall",
     "ToolTaintSpec",
@@ -30,6 +49,9 @@ __all__ = [
     "from_json",
     "join",
     "join_all",
+    "load_policies",
+    "load_policy",
+    "load_policy_str",
     "propagate",
     "subsumes",
     "to_json",

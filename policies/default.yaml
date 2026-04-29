@@ -1,0 +1,36 @@
+version: 1
+name: default
+description: |
+  Baseline exfiltration prevention. Denies the canonical web-prompt-injection
+  -> outbound-email path; reviews any tool call carrying PII destined for an
+  external endpoint; explicitly allows read-only internal lookups so the
+  agent doesn't fall through to a default-deny on benign work.
+rules:
+  - id: deny-web-to-email
+    description: Web-tainted content must not be sent via email.
+    when:
+      tool: send_email
+      taint:
+        any_of: [web]
+    effect:
+      action: deny
+      reason: >-
+        Web-sourced content may have been adversarially crafted (indirect
+        prompt injection); refusing to send via email.
+
+  - id: review-pii-egress
+    description: PII may not leave the system without a human in the loop.
+    when:
+      tool: http_post
+      taint:
+        any_of: [pii]
+    effect:
+      action: review
+      reason: PII detected in outbound HTTP request; queueing for human review.
+
+  - id: allow-internal-readers
+    description: Read-only internal lookups are unconditionally allowed.
+    when:
+      tool: kb_lookup
+    effect:
+      action: allow

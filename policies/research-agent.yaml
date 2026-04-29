@@ -1,0 +1,41 @@
+version: 1
+name: research-agent
+description: |
+  Policy for an automated web-research agent. Web search is rate-limited
+  per minute; external HTTP POSTs require human review; only the research
+  agent identity may call publish_*.
+rules:
+  - id: rate-limit-web-search
+    description: Avoid hammering the upstream search index.
+    when:
+      tool: web_search
+      identity: agent.research
+    effect:
+      action: rate_limit
+      limit_per_minute: 30
+      reason: Search throttle for agent.research.
+
+  - id: review-external-post
+    description: Any HTTP POST to an external URL is reviewed.
+    when:
+      tool: http_post
+      resource: "https://*"
+    effect:
+      action: review
+      reason: External HTTP POST observed; defer to human.
+
+  - id: allow-research-publish
+    description: The research agent is authorised to publish artefacts.
+    when:
+      tool: publish_*
+      identity: agent.research
+    effect:
+      action: allow
+
+  - id: deny-publish-from-other-agents
+    description: No other identity may use publish_* tools.
+    when:
+      tool: publish_*
+    effect:
+      action: deny
+      reason: Only agent.research is allowed to publish.
