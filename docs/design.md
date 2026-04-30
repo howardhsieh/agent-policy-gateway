@@ -57,3 +57,44 @@ LLM can request at runtime.
 - Policy-as-code (Python) vs. data (YAML/JSON). Currently leaning data with a small set
   of well-defined operators.
 - Streaming tool outputs and incremental taint propagation.
+
+## Reference monitor (R4)
+
+The runtime entry point is :class:`Gateway`, a small mutable container of
+policies + tool taint specs + an optional audit-log writer. Two methods
+matter:
+
+- ``execute(call, fn, *args, resource=None, **kwargs) -> (value, Decision)``
+  is the workhorse. It builds a :class:`Decision` from the policies, calls
+  the audit writer (so even denials are recorded), and either invokes
+  ``fn`` or raises :class:`PolicyDenied` / :class:`PolicyReview`. Both
+  exceptions carry the original ``ToolCall`` and ``Decision``.
+- ``wrap_tool`` is sugar over ``execute`` for the common case where you
+  have a Python function and want every invocation gated. The wrapper
+  recognises four reserved kwargs — ``apg_input_label``, ``apg_agent_id``,
+  ``apg_call_id``, ``apg_resource`` — and strips them before forwarding
+  the rest. ``resource_arg="url"`` ties policy resource matching to a
+  named parameter of the wrapped function so the wrapper can pull a value
+  out of either positional or keyword form via ``inspect.signature``.
+
+Policy-action mapping at runtime:
+
+- ``allow`` → :attr:`Verdict.ALLOW`, function runs.
+- ``deny``  → :attr:`Verdict.DENY`, ``PolicyDenied`` raised, function does not run.
+- ``review`` → :attr:`Verdict.REVIEW`, ``PolicyReview`` raised. We treat
+  review as a hard refusal until a reviewer is wired in (a later
+  milestone); the decision is preserved on the exception so callers can
+  defer rather than abort if they want.
+- ``rate_limit`` → :attr:`Verdict.ALLOW` for now. The DSL accepts a
+  positive ``limit_per_minute`` and the rule_id is recorded in the
+  decision, but no counter is enforced. R5 (audit log) introduces the
+  per-tool window needed to make this a true throttle.
+
+Cross-policy ordering: gateways may carry multiple policies. The first
+policy with a matching rule wins; within a policy, the first matching
+rule wins. This keeps composition predictable: appending an organisation
+default after a stricter team policy never weakens the team policy.
+
+Audit writing happens *before* the underlying function is invoked, so a
+raising audit writer aborts the call. This is the "fail closed on audit"
+posture: if you can't log a decision you don't get to act on it.

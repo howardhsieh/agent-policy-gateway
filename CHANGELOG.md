@@ -6,6 +6,7 @@ on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **Reference monitor (R4)**: new `agent_policy_gateway.gateway` module with the `Gateway` class and `@gw.wrap_tool` decorator. The gateway evaluates policies in order (first match within a policy and across policies), propagates taint via `taint.propagate` to compute the output label on every decision, and writes an audit record before the wrapped tool runs (fail-closed-on-audit). Refusals raise `PolicyDenied` or `PolicyReview`, both carrying the originating `ToolCall` and `Decision`. The decorator recognises four reserved kwargs (`apg_input_label`, `apg_agent_id`, `apg_call_id`, `apg_resource`) and strips them before forwarding; `resource_arg` ties policy resource matching to a named parameter of the wrapped function via `inspect.signature`. `Action.RATE_LIMIT` maps to `Verdict.ALLOW` until the counter lands with R5. 27 new tests in `tests/test_gateway.py`, including a worked web→summarize→email exfiltration that the gateway denies at send. New public exports: `Gateway`, `GatewayError`, `PolicyDenied`, `PolicyReview`, `AuditWriter`, and the four reserved-kwarg constants.
 - **Policy DSL v0 (R3)**: declarative YAML policies via the new
   `agent_policy_gateway.policy` module. Frozen Pydantic models —
   `Policy`, `Rule`, `Selector`, `Effect`, `TaintCondition`, `Action` —

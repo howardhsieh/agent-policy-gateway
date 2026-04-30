@@ -11,10 +11,6 @@ Each item must include acceptance criteria so the daily task knows when it's don
 
 ## Up next
 
-- [ ] **R4. Reference `Gateway` class and `wrap_tool` decorator.**
-  - Synchronous version. The decorator records the call, evaluates policies, propagates
-    taint, and writes to the audit log.
-
 - [ ] **R5. Append-only JSONL audit log + replay tool.**
   - `audit.py` writes one JSON object per decision. CLI `apg-replay` reads a log and
     prints a human-readable timeline.
@@ -52,5 +48,7 @@ Each item must include acceptance criteria so the daily task knows when it's don
 - **R2. Taint propagation algebra** — completed 2026-04-28. Added `taint.py` with `join` / `join_all`, `subsumes`, `flows_to`, `ToolTaintSpec`, and `propagate` (`output = ((∨ inputs) ∨ adds) \ declassifies`). 31 new tests in `tests/test_taint.py` covering lattice algebra, propagation rules, and a worked `web_search → summarize → send_email` exfiltration refusal. 65/65 tests green; ruff clean. Commit `fe45868`.
 
 - **R3. Policy DSL v0 (YAML)** — completed 2026-04-29. Added `policy.py` with frozen Pydantic models `Policy` / `Rule` / `Selector` / `Effect` / `TaintCondition` / `Action`, plus `load_policy` / `load_policy_str` / `load_policies`. Selectors support `fnmatch`-globbed tool and resource names, identity equality, and three-clause taint conditions (`all_of` / `any_of` / `none_of`); effects validate that `rate_limit` requires a positive `limit_per_minute` and other actions reject one. Three example YAML policies under `policies/` (`default.yaml`, `research-agent.yaml`, `strict-pii.yaml`) demonstrate exfiltration prevention, identity-based publish gating, and PII handling. 44 new tests in `tests/test_policy.py` cover schema validation, loader error paths, and first-match behaviour against the example policies. 109/109 tests green; ruff clean. Commit `0569b45`.
+
+- **R4. Reference `Gateway` class and `wrap_tool` decorator** — completed 2026-04-30. Added `gateway.py` with the `Gateway` reference monitor (`decide` / `execute`), the `wrap_tool` decorator (parameterised and bare forms), `PolicyDenied` / `PolicyReview` exceptions that carry the originating `ToolCall` and `Decision`, an `AuditWriter` callable interface invoked before the underlying tool runs (fail-closed-on-audit), and four reserved kwargs (`apg_input_label`, `apg_agent_id`, `apg_call_id`, `apg_resource`) that configure each call and are stripped from forwarded kwargs. `resource_arg` ties policy resource matching to a named parameter via `inspect.signature` so positional and keyword call shapes both work. Action mapping: `allow`/`deny`/`review` → matching verdicts, `rate_limit` → ALLOW in R4 (counter lands with R5). 27 new tests in `tests/test_gateway.py` cover the pure decision logic, exception payloads, audit-on-deny, kwarg stripping, resource-arg binding, and the canonical web→summarize→email exfiltration scenario (denied at send) plus an unaffected internal lookup. 136/136 tests green; ruff clean. Commit `PENDING`.
 
 _(More items below as they ship.)_
