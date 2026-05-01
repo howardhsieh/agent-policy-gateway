@@ -20,15 +20,15 @@ audit-log writer. Every call goes through one of two entry points:
   ``apg_call_id``, ``apg_resource``) configure the call and are
   stripped before the wrapped function sees them.
 
-Audit-log writing is intentionally minimal in R4. The gateway accepts
-any ``Callable[[ToolCall, Decision], None]`` and invokes it once per
-decision. R5 adds the on-disk JSONL format and a ``apg-replay`` CLI;
-R4 ships the interface so policies can be exercised end-to-end today.
+Audit-log writing uses any ``Callable[[ToolCall, Decision], None]``;
+:class:`agent_policy_gateway.audit.JsonlAuditWriter` is the on-disk
+implementation, paired with the ``apg-replay`` CLI for reading logs
+back as a human-readable timeline.
 
-Rate limiting is similarly deferred. The policy DSL allows
-``action: rate_limit`` with a ``limit_per_minute`` field, but the
-runtime mapping in this module treats matching rules as ``ALLOW`` and
-records the rule id in the decision. R5 will add a counter and convert
+Rate limiting is deferred. The policy DSL allows ``action: rate_limit``
+with a ``limit_per_minute`` field, but the runtime mapping in this
+module treats matching rules as ``ALLOW`` and records the rule id in
+the decision. A future milestone will add a counter and convert
 exhaustion into a refusal.
 """
 

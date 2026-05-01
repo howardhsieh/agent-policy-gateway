@@ -18,6 +18,9 @@ classifiers = [
     "Topic :: Security",
 ]
 
+[project.scripts]
+apg-replay = "agent_policy_gateway.audit:replay_main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8",

@@ -1,5 +1,13 @@
 """agent-policy-gateway: policy enforcement and IFC for AI agent tool calls."""
 
+from agent_policy_gateway.audit import (
+    AuditFormatError,
+    AuditRecord,
+    JsonlAuditWriter,
+    format_record,
+    read_audit,
+    replay_main,
+)
 from agent_policy_gateway.core import (
     Decision,
     TaintLabel,
@@ -45,6 +53,8 @@ __version__ = "0.0.1"
 __all__ = [
     "AGENT_ID_KWARG",
     "Action",
+    "AuditFormatError",
+    "AuditRecord",
     "AuditWriter",
     "CALL_ID_KWARG",
     "Decision",
@@ -52,6 +62,7 @@ __all__ = [
     "Gateway",
     "GatewayError",
     "INPUT_LABEL_KWARG",
+    "JsonlAuditWriter",
     "Policy",
     "PolicyDenied",
     "PolicyError",
@@ -66,6 +77,7 @@ __all__ = [
     "Verdict",
     "__version__",
     "flows_to",
+    "format_record",
     "from_json",
     "join",
     "join_all",
@@ -73,6 +85,8 @@ __all__ = [
     "load_policy",
     "load_policy_str",
     "propagate",
+    "read_audit",
+    "replay_main",
     "subsumes",
     "to_json",
 ]
