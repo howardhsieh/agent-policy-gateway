@@ -98,3 +98,32 @@ default after a stricter team policy never weakens the team policy.
 Audit writing happens *before* the underlying function is invoked, so a
 raising audit writer aborts the call. This is the "fail closed on audit"
 posture: if you can't log a decision you don't get to act on it.
+
+
+## MCP adapter (R6)
+
+The MCP adapter (`agent_policy_gateway.mcp_adapter.wrap_mcp_session`) lets a
+caller mount every tool advertised by an MCP-compatible session under a
+`Gateway` in one line:
+
+```python
+tools = wrap_mcp_session(gateway, mcp_session)
+tools["search"](query="apg", apg_input_label=TaintLabel.of("user"))
+```
+
+The session is duck-typed against a small *synchronous* protocol — `list_tools()`
+returning either a bare iterable or a `.tools`-bearing wrapper, and
+`call_tool(name, arguments)`. We deliberately do **not** import the real
+`mcp` package: keeping the dependency surface narrow makes the adapter
+testable against ad-hoc fakes, and keeps the project shippable to
+environments that have not adopted the MCP SDK. The async transport is
+the right shape for R9 (the dedicated async-gateway-path milestone), so
+this milestone leaves it on the table.
+
+`prefix` namespaces multiple sessions on the same gateway. Each tool is
+registered as `<prefix>.<advertised>`, but the underlying MCP call always
+uses the advertised (un-prefixed) name — the prefix is local to the
+gateway's view, not something the server sees. `taint_specs` and
+`resource_args` are keyed by the advertised name; the registered name is
+what shows up in audit records and policy selectors, which are the two
+places where prefixes need to be visible.

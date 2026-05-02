@@ -27,6 +27,7 @@ from agent_policy_gateway.gateway import (
     PolicyDenied,
     PolicyReview,
 )
+from agent_policy_gateway.mcp_adapter import wrap_mcp_session
 from agent_policy_gateway.policy import (
     Action,
     Effect,
@@ -89,4 +90,5 @@ __all__ = [
     "replay_main",
     "subsumes",
     "to_json",
+    "wrap_mcp_session",
 ]
