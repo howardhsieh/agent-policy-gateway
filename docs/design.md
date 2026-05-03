@@ -127,3 +127,67 @@ gateway's view, not something the server sees. `taint_specs` and
 `resource_args` are keyed by the advertised name; the registered name is
 what shows up in audit records and policy selectors, which are the two
 places where prefixes need to be visible.
+
+
+## OpenAI function-calling adapter (R7)
+
+The OpenAI adapter (`agent_policy_gateway.openai_adapter`) splits the
+function-calling integration into three small, composable pieces:
+
+```python
+from agent_policy_gateway import (
+    Gateway, OpenAITool, openai_tool_specs, wrap_openai_tools,
+    dispatch_openai_tool_call,
+)
+
+tools = [
+    OpenAITool("search", "search the web", SEARCH_SCHEMA, search_fn,
+               taint_spec=ToolTaintSpec.of(adds=("web",))),
+    OpenAITool("send_email", "send mail", SEND_SCHEMA, send_fn,
+               resource_arg="to"),
+]
+
+# 1) JSON tool descriptors for the API request payload.
+api_tools = openai_tool_specs(tools)
+
+# 2) Gateway-mediated callables, keyed by registered name.
+wrapped = wrap_openai_tools(gateway, tools)
+
+# 3) Convert each model-produced tool_call into a `role="tool"` message.
+for tc in response.choices[0].message.tool_calls:
+    chat.append(dispatch_openai_tool_call(
+        wrapped, tc,
+        input_label=TaintLabel.of("user"),
+        agent_id="agent.research",
+    ))
+```
+
+The OpenAI Python SDK is intentionally **not** a dependency — `tool_calls`
+are duck-typed against either the dict shape returned by raw HTTP
+responses (`{"id": ..., "function": {"name": ..., "arguments": "<json>"}}`)
+or the attribute shape produced by the SDK's pydantic models. The adapter
+is testable with hand-rolled fakes and shippable to environments that
+have not adopted the `openai` package.
+
+The reserved gateway kwargs (`apg_input_label`, `apg_agent_id`,
+`apg_call_id`, `apg_resource`) are **not** advertised in the JSON
+schemas — they are orchestration concerns, not function parameters. The
+caller controls them via the `dispatch_openai_tool_call(...)` keyword
+arguments; `apg_call_id` is auto-populated from the OpenAI `tool_call.id`
+so audit records line up with the model's view of the conversation.
+
+Refusal handling is structural: a `PolicyDenied` or `PolicyReview` raised
+inside the wrapped callable is converted into a `role="tool"` message
+whose content is a structured JSON payload
+(`{"error": "policy_refusal", "verdict": ..., "rule_id": ..., "reason": ...}`).
+That keeps the model in the loop — it sees a feedback signal it can
+react to, rather than the orchestration loop terminating mid-turn.
+Callers who want a different shape pass `on_denied=...` to
+`dispatch_openai_tool_call`; tool exceptions and malformed model output
+intentionally raise so they cannot be papered over.
+
+Schema validation against `OpenAITool.parameters` is deferred. The model
+typically produces conforming output, and any malformed argument surfaces
+as a `TypeError` from the underlying Python function (still gateway-audited).
+A future milestone can layer in `jsonschema` validation in front of
+dispatch without changing this contract.

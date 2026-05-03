@@ -28,6 +28,14 @@ from agent_policy_gateway.gateway import (
     PolicyReview,
 )
 from agent_policy_gateway.mcp_adapter import wrap_mcp_session
+from agent_policy_gateway.openai_adapter import (
+    OpenAITool,
+    OpenAIToolCallError,
+    dispatch_openai_tool_call,
+    dispatch_openai_tool_calls,
+    openai_tool_specs,
+    wrap_openai_tools,
+)
 from agent_policy_gateway.policy import (
     Action,
     Effect,
@@ -64,6 +72,8 @@ __all__ = [
     "GatewayError",
     "INPUT_LABEL_KWARG",
     "JsonlAuditWriter",
+    "OpenAITool",
+    "OpenAIToolCallError",
     "Policy",
     "PolicyDenied",
     "PolicyError",
@@ -77,6 +87,8 @@ __all__ = [
     "ToolTaintSpec",
     "Verdict",
     "__version__",
+    "dispatch_openai_tool_call",
+    "dispatch_openai_tool_calls",
     "flows_to",
     "format_record",
     "from_json",
@@ -85,10 +97,12 @@ __all__ = [
     "load_policies",
     "load_policy",
     "load_policy_str",
+    "openai_tool_specs",
     "propagate",
     "read_audit",
     "replay_main",
     "subsumes",
     "to_json",
     "wrap_mcp_session",
+    "wrap_openai_tools",
 ]
