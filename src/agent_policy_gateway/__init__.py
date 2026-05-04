@@ -1,5 +1,13 @@
 """agent-policy-gateway: policy enforcement and IFC for AI agent tool calls."""
 
+from agent_policy_gateway.anthropic_adapter import (
+    AnthropicTool,
+    AnthropicToolUseError,
+    anthropic_tool_specs,
+    dispatch_anthropic_tool_use,
+    dispatch_anthropic_tool_uses,
+    wrap_anthropic_tools,
+)
 from agent_policy_gateway.audit import (
     AuditFormatError,
     AuditRecord,
@@ -62,6 +70,8 @@ __version__ = "0.0.1"
 __all__ = [
     "AGENT_ID_KWARG",
     "Action",
+    "AnthropicTool",
+    "AnthropicToolUseError",
     "AuditFormatError",
     "AuditRecord",
     "AuditWriter",
@@ -87,6 +97,9 @@ __all__ = [
     "ToolTaintSpec",
     "Verdict",
     "__version__",
+    "anthropic_tool_specs",
+    "dispatch_anthropic_tool_use",
+    "dispatch_anthropic_tool_uses",
     "dispatch_openai_tool_call",
     "dispatch_openai_tool_calls",
     "flows_to",
@@ -103,6 +116,7 @@ __all__ = [
     "replay_main",
     "subsumes",
     "to_json",
+    "wrap_anthropic_tools",
     "wrap_mcp_session",
     "wrap_openai_tools",
 ]
