@@ -21,9 +21,12 @@ Each descriptor must expose a non-empty string ``name``, either as an
 attribute or as a dict key. Anything else raises a clear
 :class:`ValueError` so misshapen sessions surface immediately.
 
-The async MCP transport is reserved for R9; this module mediates sync
-sessions only. Callers using the real async ``mcp`` SDK can either wrap
-each call in :func:`asyncio.run` or wait for R9.
+This module mediates *sync* MCP sessions. For the async ``mcp`` SDK
+transport (where ``ClientSession.list_tools`` and ``call_tool`` are
+``async def``), use
+:func:`agent_policy_gateway.mcp_async_adapter.wrap_mcp_session_async`,
+which has the same surface and semantics but awaits each MCP call
+through :meth:`Gateway.aexecute`.
 """
 
 from __future__ import annotations

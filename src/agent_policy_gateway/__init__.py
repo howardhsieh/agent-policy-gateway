@@ -36,6 +36,7 @@ from agent_policy_gateway.gateway import (
     PolicyReview,
 )
 from agent_policy_gateway.mcp_adapter import wrap_mcp_session
+from agent_policy_gateway.mcp_async_adapter import wrap_mcp_session_async
 from agent_policy_gateway.openai_adapter import (
     OpenAITool,
     OpenAIToolCallError,
@@ -118,5 +119,6 @@ __all__ = [
     "to_json",
     "wrap_anthropic_tools",
     "wrap_mcp_session",
+    "wrap_mcp_session_async",
     "wrap_openai_tools",
 ]

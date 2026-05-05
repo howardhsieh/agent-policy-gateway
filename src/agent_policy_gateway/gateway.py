@@ -1,4 +1,4 @@
-"""Reference monitor: Gateway class and wrap_tool decorator (R4).
+"""Reference monitor: Gateway class and wrap_tool decorator (R4 + R9).
 
 This module wires the static pieces of the project — the core types in
 :mod:`agent_policy_gateway.core`, the taint algebra in
@@ -7,23 +7,35 @@ This module wires the static pieces of the project — the core types in
 
 A :class:`Gateway` holds an ordered list of :class:`Policy` objects, a
 registry mapping tool names to :class:`ToolTaintSpec`, and an optional
-audit-log writer. Every call goes through one of two entry points:
+audit-log writer. Every call goes through one of four entry points:
 
-* :meth:`Gateway.execute` — the workhorse. Takes a fully-built
-  :class:`ToolCall`, walks policies in order, applies the first
-  matching rule (or the default), propagates taint to compute the
+* :meth:`Gateway.execute` — the synchronous workhorse. Takes a
+  fully-built :class:`ToolCall`, walks policies in order, applies the
+  first matching rule (or the default), propagates taint to compute the
   output label, writes an audit record, and either invokes the
   underlying function or raises.
-* :meth:`Gateway.wrap_tool` — sugar over ``execute``. Wraps a plain
-  Python function so each call is mediated by the gateway. Reserved
-  keyword arguments (``apg_input_label``, ``apg_agent_id``,
-  ``apg_call_id``, ``apg_resource``) configure the call and are
-  stripped before the wrapped function sees them.
+* :meth:`Gateway.aexecute` — the asynchronous twin. Same contract as
+  :meth:`execute`, but ``fn`` may be a coroutine function (or any
+  callable returning an awaitable) and the audit writer may itself
+  return an awaitable, in which case it is awaited before the tool
+  runs. Sync audit writers continue to work unchanged.
+* :meth:`Gateway.wrap_tool` — sync sugar over ``execute``. Wraps a
+  plain Python function so each call is mediated by the gateway.
+* :meth:`Gateway.wrap_tool_async` — async sugar over ``aexecute``.
+  Wraps an ``async def`` function so each ``await tool(...)`` is
+  mediated by the gateway.
+
+In every entry point the same four reserved keyword arguments
+(``apg_input_label``, ``apg_agent_id``, ``apg_call_id``,
+``apg_resource``) configure the call and are stripped before the
+wrapped function sees them.
 
 Audit-log writing uses any ``Callable[[ToolCall, Decision], None]``;
 :class:`agent_policy_gateway.audit.JsonlAuditWriter` is the on-disk
 implementation, paired with the ``apg-replay`` CLI for reading logs
-back as a human-readable timeline.
+back as a human-readable timeline. Async callers may pass a writer
+whose return value is awaitable — :meth:`aexecute` awaits it as part
+of the fail-closed-on-audit contract.
 
 Rate limiting is deferred. The policy DSL allows ``action: rate_limit``
 with a ``limit_per_minute`` field, but the runtime mapping in this
@@ -37,7 +49,7 @@ from __future__ import annotations
 import functools
 import inspect
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -217,6 +229,54 @@ class Gateway:
         result = fn(*args, **kwargs)
         return result, decision
 
+    # ----- async core execution -------------------------------------------------
+
+    async def aexecute(
+        self,
+        call: ToolCall,
+        fn: Callable[..., Any],
+        *args: Any,
+        resource: str | None = None,
+        **kwargs: Any,
+    ) -> tuple[Any, Decision]:
+        """Asynchronous twin of :meth:`execute`.
+
+        Same fail-closed-on-audit / DENY-or-REVIEW-raises contract as
+        :meth:`execute`, with two extra affordances for async callers:
+
+        * ``fn`` may be a coroutine function or any callable returning an
+          awaitable. The result is awaited before being returned.
+        * The audit writer's return value is awaited if it is itself an
+          awaitable, so callers can plug in async log sinks (e.g. async
+          databases, queues) without a thread shim. Sync writers — the
+          baseline — keep working unchanged.
+
+        Synchronous ``fn`` callables are still accepted for ergonomics
+        (mixing one async tool with a few sync ones), but the recommended
+        async use is :meth:`wrap_tool_async`, which always awaits.
+        """
+        decision = self.decide(call, resource=resource)
+        if self.audit_writer is not None:
+            audit_result = self.audit_writer(call, decision)
+            if inspect.isawaitable(audit_result):
+                await audit_result
+        if decision.verdict == Verdict.DENY:
+            raise PolicyDenied(
+                _format_refusal("deny", decision),
+                decision=decision,
+                call=call,
+            )
+        if decision.verdict == Verdict.REVIEW:
+            raise PolicyReview(
+                _format_refusal("review", decision),
+                decision=decision,
+                call=call,
+            )
+        result = fn(*args, **kwargs)
+        if inspect.isawaitable(result):
+            result = await result
+        return result, decision
+
     # ----- decorator ------------------------------------------------------------
 
     def wrap_tool(
@@ -314,6 +374,96 @@ class Gateway:
                     call_id=call_id,
                 )
                 value, _ = self.execute(
+                    call, target, *args, resource=resource, **kwargs
+                )
+                return value
+
+            return wrapper
+
+        if fn is not None:
+            return decorator(fn)
+        return decorator
+
+    # ----- async decorator ------------------------------------------------------
+
+    def wrap_tool_async(
+        self,
+        fn: Callable[..., Awaitable[Any]] | None = None,
+        *,
+        tool_name: str | None = None,
+        taint_spec: ToolTaintSpec | None = None,
+        resource_arg: str | None = None,
+    ) -> Callable[..., Any]:
+        """Async sibling of :meth:`wrap_tool`.
+
+        Wraps an ``async def`` function — or any callable that returns an
+        awaitable — so each ``await tool(...)`` is mediated by this
+        gateway. Reserved keyword arguments and ``resource_arg`` semantics
+        match the synchronous wrapper exactly; the only difference is
+        that the returned wrapper is itself an ``async def`` and routes
+        through :meth:`aexecute`.
+
+        Usage::
+
+            gw = Gateway(policies=[load_policy("policies/default.yaml")])
+
+            @gw.wrap_tool_async(
+                tool_name="send_email",
+                taint_spec=ToolTaintSpec.of(),
+                resource_arg="to",
+            )
+            async def send_email(to: str, body: str) -> dict:
+                ...
+
+            await send_email(
+                "ops@example.com",
+                "hi",
+                apg_input_label=TaintLabel.of("web"),
+                apg_agent_id="agent.research",
+            )
+        """
+
+        def decorator(target: Callable[..., Awaitable[Any]]) -> Callable[..., Any]:
+            name = tool_name or target.__name__
+            if taint_spec is not None:
+                self.register_tool(name, taint_spec)
+            sig = inspect.signature(target)
+
+            @functools.wraps(target)
+            async def wrapper(*args: Any, **kwargs: Any) -> Any:
+                input_label = kwargs.pop(INPUT_LABEL_KWARG, None) or TaintLabel()
+                agent_id = kwargs.pop(AGENT_ID_KWARG, None)
+                call_id = kwargs.pop(CALL_ID_KWARG, None) or uuid.uuid4().hex
+                explicit_resource = kwargs.pop(RESOURCE_KWARG, None)
+
+                # Same signature-binding strategy as wrap_tool: fall back
+                # to raw kwargs if the caller's arity does not match the
+                # wrapped function — the call will fail naturally when
+                # invoked, but we still want a sensible audit record.
+                try:
+                    bound = sig.bind(*args, **kwargs)
+                    bound.apply_defaults()
+                    call_args: dict[str, Any] = dict(bound.arguments)
+                except TypeError:
+                    call_args = dict(kwargs)
+
+                for k in _RESERVED_KWARGS:
+                    call_args.pop(k, None)
+
+                resource = explicit_resource
+                if resource is None and resource_arg is not None:
+                    resource = call_args.get(resource_arg)
+                    if resource is not None and not isinstance(resource, str):
+                        resource = str(resource)
+
+                call = ToolCall(
+                    tool_name=name,
+                    args=call_args,
+                    input_label=input_label,
+                    agent_id=agent_id,
+                    call_id=call_id,
+                )
+                value, _ = await self.aexecute(
                     call, target, *args, resource=resource, **kwargs
                 )
                 return value
