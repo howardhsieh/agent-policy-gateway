@@ -28,6 +28,11 @@ dev = [
     "ruff>=0.4",
     "mypy>=1.10",
 ]
+docs = [
+    "mkdocs>=1.5",
+    "mkdocs-material>=9.5",
+    "pymdown-extensions>=10",
+]
 
 [build-system]
 requires = ["setuptools>=68"]

@@ -191,3 +191,27 @@ typically produces conforming output, and any malformed argument surfaces
 as a `TypeError` from the underlying Python function (still gateway-audited).
 A future milestone can layer in `jsonschema` validation in front of
 dispatch without changing this contract.
+
+## Docs site (R11)
+
+The project documentation is published via [mkdocs-material](https://squidfunk.github.io/mkdocs-material/).
+Configuration lives in `mkdocs.yml` at the repo root; site sources live under
+`docs/` and double as input to both the rendered site and the in-repo
+markdown reading flow (the milestone-design notes are exactly the same
+files in either context). Contributors install the optional `docs` extra
+(`pip install -e ".[docs]"`) and run `mkdocs serve` for a live-reloading
+preview.
+
+Two hard rules keep the site honest:
+
+- The `nav` block in `mkdocs.yml` only references files that actually live
+  under `docs/`. A dedicated test (`tests/test_docs_site.py`) walks the nav
+  recursively and fails if a referenced file is missing — drift between
+  reorg commits and `mkdocs.yml` therefore breaks CI rather than the
+  rendered site.
+- Build dependencies are pinned to the optional `docs` extra so the core
+  test matrix stays dependency-light. The same test conditionally imports
+  `mkdocs` and runs `mkdocs build --strict` into a tmp dir; if mkdocs is
+  not installed (most CI matrix entries), it skips, otherwise it asserts
+  the site builds without warnings.
+

@@ -1,0 +1,66 @@
+site_name: agent-policy-gateway
+site_description: Policy enforcement and information-flow-control gateway for AI agent tool calls.
+site_author: Hung Mo Howard Hsieh
+site_url: https://howardhsieh.github.io/agent-policy-gateway/
+
+repo_name: howardhsieh/agent-policy-gateway
+repo_url: https://github.com/howardhsieh/agent-policy-gateway
+edit_uri: edit/main/
+
+docs_dir: docs
+
+theme:
+  name: material
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.tabs
+    - navigation.top
+    - content.code.copy
+    - content.action.edit
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+
+nav:
+  - Home: index.md
+  - Quickstart: quickstart.md
+  - Design: design.md
+  - Daily runbook: daily-runbook.md
+
+# Daily work-log entries are not expected to appear in the site navigation.
+not_in_nav: |
+  /work-log/*
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/howardhsieh/agent-policy-gateway

@@ -57,6 +57,20 @@ def send_email(to: str, body: str) -> None:
 # Now the agent calls these wrappers; the gateway enforces policy and tracks taint.
 ```
 
+## Documentation
+
+The full documentation site is built with [mkdocs-material](https://squidfunk.github.io/mkdocs-material/).
+Build it locally:
+
+```bash
+pip install -e ".[docs]"
+mkdocs serve
+```
+
+The site sources live under [`docs/`](./docs/) and the configuration in
+[`mkdocs.yml`](./mkdocs.yml). Start with [`docs/index.md`](./docs/index.md) and
+[`docs/quickstart.md`](./docs/quickstart.md).
+
 ## License
 
 Apache-2.0. See [`LICENSE`](./LICENSE).
