@@ -215,3 +215,34 @@ Two hard rules keep the site honest:
   not installed (most CI matrix entries), it skips, otherwise it asserts
   the site builds without warnings.
 
+
+## Benchmark harness (R12)
+
+Performance work needs a baseline. `agent_policy_gateway.bench` ships a
+small, dependency-free harness (`benchmark` + four canonical scenarios:
+raw-call, gateway-allow, gateway-deny, gateway-allow-with-audit) that
+reports min / mean / p50 / p95 / p99 / ops-per-sec for each scenario.
+The same logic backs the `apg-bench` console script (`--iterations`,
+`--warmup`, `--scenario`, `--json`).
+
+A few decisions worth recording:
+
+- **Per-call timing, not wall-clock-divided averages.** Each call is
+  bracketed with `time.perf_counter_ns()`, so percentiles reflect real
+  per-call latency. Mean is derived from the timed total.
+- **Scenarios hold the tool body constant.** Every scenario invokes the
+  same trivial `x + y` function, so the gateway-allow vs raw-call delta
+  is mostly the gateway. Heavier tools would otherwise dominate the
+  numbers and obscure overhead changes between releases.
+- **No I/O in the default audit scenario.** `gateway_allow_audit` uses
+  an in-process no-op `AuditWriter` so the comparison isolates
+  audit-call dispatch cost from `JsonlAuditWriter`'s JSON-encode +
+  fsync cost. The latter is intentionally not in the default suite —
+  its variance across hosts and filesystems would make cross-host
+  comparison noisy.
+- **Tests assert structure, not thresholds.** `tests/test_bench.py`
+  checks percentile ordering (`min <= p50 <= p95 <= p99 <= max`),
+  scenario semantics (deny actually denies; audit writer actually
+  fires), table/JSON shape, and CLI behaviour. Deliberately no
+  absolute-microsecond assertions, because those flake on shared CI
+  hosts and tell you nothing about whether the gateway code regressed.

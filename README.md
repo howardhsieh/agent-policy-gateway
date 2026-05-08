@@ -57,6 +57,22 @@ def send_email(to: str, body: str) -> None:
 # Now the agent calls these wrappers; the gateway enforces policy and tracks taint.
 ```
 
+## Benchmarks
+
+The `apg-bench` console script runs a small standard-library-only suite that
+measures per-call overhead and throughput on the gateway's hot paths
+(raw call, gateway-allow, gateway-deny, gateway-allow + audit). After
+`pip install -e .` the script is on `$PATH`:
+
+```bash
+apg-bench                       # human-readable table
+apg-bench --json                # machine-readable
+apg-bench --scenario raw_call   # one scenario only
+```
+
+See [`docs/benchmarks.md`](./docs/benchmarks.md) for the methodology and
+the public `benchmark()` / `run_default_suite()` API.
+
 ## Documentation
 
 The full documentation site is built with [mkdocs-material](https://squidfunk.github.io/mkdocs-material/).

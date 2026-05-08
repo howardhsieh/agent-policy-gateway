@@ -54,6 +54,7 @@ nav:
   - Home: index.md
   - Quickstart: quickstart.md
   - Design: design.md
+  - Benchmarks: benchmarks.md
   - Daily runbook: daily-runbook.md
 
 # Daily work-log entries are not expected to appear in the site navigation.
