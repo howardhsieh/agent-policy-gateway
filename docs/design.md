@@ -246,3 +246,27 @@ A few decisions worth recording:
   fires), table/JSON shape, and CLI behaviour. Deliberately no
   absolute-microsecond assertions, because those flake on shared CI
   hosts and tell you nothing about whether the gateway code regressed.
+
+
+## Threat model (R13)
+
+The project's threat model is a project-level promise rather than a
+per-feature appendix, so it lives in its own file
+([`threat-model.md`](threat-model.md)) and is referenced from
+feature docs rather than restated inline. Two consequences worth
+recording:
+
+- **Single source of truth.** When a new tool, adapter, or policy
+  feature ships, the relevant adversary class and abuse scenario
+  belong in `threat-model.md`, not in this design note. This page
+  describes the *runtime mechanics* of the reference monitor; the
+  threat-model page describes *who the runtime is up against and
+  why*. A reader who wants both opens both.
+- **Roadmap-worthy edits.** Substantive changes to assets,
+  adversary classes, assumptions, or the in-scope/out-of-scope
+  split are roadmap-worthy events: open a roadmap item, ship the
+  change with code or tests, link the commit. Editorial fixes
+  (typo, link, clarification) do not need a roadmap item. The
+  test in `tests/test_threat_model.py` enforces only the
+  structural invariants — section presence, nav inclusion,
+  internal-link integrity — so editorial freedom is preserved.

@@ -33,6 +33,10 @@ We assume the LLM itself is **not** trusted to decide what tool calls are safe. 
 content can reach the model via any tool output, and the model may then attempt unsafe calls.
 The gateway is the trusted reference monitor; the model is policy-controlled, not policy-aware.
 
+The full project threat model — assets, trust boundaries, adversary classes, assumptions,
+canonical abuse scenarios mapped to the mitigations the gateway already ships, and residual
+risks — lives at [`docs/threat-model.md`](./docs/threat-model.md).
+
 ## Non-goals
 
 - Not a content filter. We do not classify text as "harmful." This is about *flow*.
