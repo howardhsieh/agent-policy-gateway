@@ -57,6 +57,7 @@ nav:
   - Threat model: threat-model.md
   - Benchmarks: benchmarks.md
   - Daily runbook: daily-runbook.md
+  - Release: release.md
 
 # Daily work-log entries are not expected to appear in the site navigation.
 not_in_nav: |

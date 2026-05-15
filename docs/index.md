@@ -29,6 +29,7 @@ carry untrusted taint.
 | Read the project threat model in full | [Threat model](threat-model.md) |
 | Read the open-source roadmap | [ROADMAP](https://github.com/howardhsieh/agent-policy-gateway/blob/main/ROADMAP.md) |
 | Follow the daily, autonomous build cadence | [Daily runbook](daily-runbook.md) |
+| Cut a release | [Release runbook](release.md) |
 
 ## Adapters
 

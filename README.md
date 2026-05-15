@@ -91,6 +91,18 @@ The site sources live under [`docs/`](./docs/) and the configuration in
 [`mkdocs.yml`](./mkdocs.yml). Start with [`docs/index.md`](./docs/index.md) and
 [`docs/quickstart.md`](./docs/quickstart.md).
 
+## Release
+
+Releases are published to PyPI. The intended automated path is a
+GitHub Actions workflow at `.github/workflows/publish.yml`
+(roadmap item **R14b**, still pending) that builds the sdist + wheel
+and uploads them via PyPI's trusted-publisher OIDC flow — no
+long-lived API token is stored in the repo. Until R14b lands, the
+documented manual fallback (`python -m build` + `python -m twine upload`)
+is the working path. The full procedure — one-time PyPI trusted-publisher
+setup, the tag-and-push flow, the manual fallback, and a post-release
+verification checklist — is in [`docs/release.md`](./docs/release.md).
+
 ## License
 
 Apache-2.0. See [`LICENSE`](./LICENSE).

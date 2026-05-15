@@ -270,3 +270,46 @@ recording:
   test in `tests/test_threat_model.py` enforces only the
   structural invariants — section presence, nav inclusion,
   internal-link integrity — so editorial freedom is preserved.
+
+
+## Release runbook (R14a)
+
+R14 was split into two roadmap items:
+
+- **R14a — Release runbook + manual fallback (docs).** Shipped
+  with this commit. The runbook at
+  [`release.md`](release.md) documents the steady-state release
+  procedure (tag-and-push), the one-time PyPI trusted-publisher
+  configuration, the `python -m build` + `python -m twine upload`
+  manual fallback, and the post-release verification checklist.
+  It is intentionally written so the manual fallback is a complete
+  release path on its own — the project can cut a release today,
+  before any GitHub Actions workflow lands.
+- **R14b — Publish workflow (`.github/workflows/publish.yml`).**
+  Still under *Up next* in the roadmap. The split exists because
+  pushing a file under `.github/workflows/` requires a GitHub PAT
+  carrying the `workflow` scope (classic) or *Workflows: Read and
+  write* (fine-grained); the daily-task PAT currently does not
+  carry that scope, so R14b cannot land via the scheduled run. The
+  runbook ships first so the *procedure* is settled and reviewable
+  independently of the *automation* that implements it.
+
+Two design notes worth recording:
+
+- **Trusted publishing is the destination, not a stored API token.**
+  The runbook describes how the eventual workflow will use PyPI's
+  OIDC flow (`permissions: id-token: write` + the `pypi` GitHub
+  environment) so that no long-lived `PYPI_API_TOKEN` is stored
+  in the repository or in GitHub secrets. The manual fallback
+  uses a project-scoped API token only because `twine upload`
+  has no OIDC mode; that token never leaves the developer's
+  machine.
+- **Test scope matches commit scope.** Today's commit ships
+  `tests/test_release_runbook.py`, which asserts only what is
+  already on disk: the runbook file, its mkdocs nav entry, the
+  README and `docs/index.md` cross-links, the R14a design note,
+  and the integrity of every relative link from the runbook.
+  Workflow-file invariants (`v*` trigger, `test → build → publish`
+  job graph, `id-token: write` permission, the `pypi`
+  environment, the absence of a `PYPI_API_TOKEN` secret) land in
+  `tests/test_publish_workflow.py` with R14b.
