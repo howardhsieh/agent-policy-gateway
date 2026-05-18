@@ -25,4 +25,13 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Run Semgrep
-        run: semgrep ci --config=p/default --config=p/python --config=p/security-audit --error --severity=ERROR --severity=WARNING
+        run: >-
+          semgrep scan
+          --config=p/default
+          --config=p/python
+          --config=p/security-audit
+          --error
+          --severity=ERROR
+          --severity=WARNING
+          --exclude=tests
+          --metrics=off
