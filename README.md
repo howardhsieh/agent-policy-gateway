@@ -2,7 +2,7 @@
 
 A policy enforcement and information-flow-control (IFC) gateway for AI agent tool calls.
 
-> **Status:** Pre-alpha. Active development. See [`ROADMAP.md`](./ROADMAP.md).
+> **Status:** 0.1.0 — first tagged release. See [`CHANGELOG.md`](./CHANGELOG.md) for what's in it, [`ROADMAP.md`](./ROADMAP.md) for what's done.
 
 ## Why
 
