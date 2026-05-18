@@ -93,15 +93,18 @@ The site sources live under [`docs/`](./docs/) and the configuration in
 
 ## Release
 
-Releases are published to PyPI. The intended automated path is a
-GitHub Actions workflow at `.github/workflows/publish.yml`
-(roadmap item **R14b**, still pending) that builds the sdist + wheel
-and uploads them via PyPI's trusted-publisher OIDC flow — no
-long-lived API token is stored in the repo. Until R14b lands, the
+Releases are published to PyPI. The automated path is the GitHub
+Actions workflow at [`.github/workflows/publish.yml`](./.github/workflows/publish.yml):
+push a `v*` tag and a three-job `test → build → publish` pipeline
+runs, uploading the sdist + wheel via PyPI's trusted-publisher OIDC
+flow — no long-lived API token is stored in the repo or in GitHub
+secrets. A `workflow_dispatch` trigger is wired up too, so a release
+can be re-run from the Actions tab after a transient failure. The
 documented manual fallback (`python -m build` + `python -m twine upload`)
-is the working path. The full procedure — one-time PyPI trusted-publisher
-setup, the tag-and-push flow, the manual fallback, and a post-release
-verification checklist — is in [`docs/release.md`](./docs/release.md).
+remains the disaster-recovery path. The full procedure — one-time
+PyPI trusted-publisher setup, the tag-and-push flow, the manual
+fallback, and a post-release verification checklist — is in
+[`docs/release.md`](./docs/release.md).
 
 ## License
 

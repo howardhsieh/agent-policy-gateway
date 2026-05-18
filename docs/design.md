@@ -313,3 +313,43 @@ Two design notes worth recording:
   job graph, `id-token: write` permission, the `pypi`
   environment, the absence of a `PYPI_API_TOKEN` secret) land in
   `tests/test_publish_workflow.py` with R14b.
+
+
+## Publish workflow (R14b)
+
+R14a shipped the release *runbook*; R14b ships the GitHub Actions
+*workflow* that runbook has been pointing at
+([`.github/workflows/publish.yml`](../.github/workflows/publish.yml)).
+The workflow triggers on a `v*` tag push and on
+`workflow_dispatch`; jobs `test → build → publish` run in sequence;
+`publish` uploads via PyPI trusted publishing
+(`pypa/gh-action-pypi-publish@release/v1`,
+`permissions: id-token: write`, GitHub environment `pypi`). Three
+design decisions are worth recording:
+
+- **Artifact-upload-then-download between `build` and `publish`.**
+  `build` uploads `dist/` as an `actions/upload-artifact@v4` artifact;
+  `publish` downloads the same artifact via
+  `actions/download-artifact@v4`. The alternative — running
+  `python -m build` again inside `publish` — would produce a
+  *different* sdist/wheel (different mtimes, different hashes) than
+  the one `twine check --strict` inspected. The two-step hand-off is
+  the only way to guarantee the bits twine checked are the bits that
+  PyPI receives.
+- **Top-level `permissions: contents: read`.** The workflow declares
+  the minimum-privilege default at the top, and only the `publish`
+  job opts into `id-token: write` (for the OIDC handshake). `test`
+  and `build` cannot mint OIDC tokens, write to the repository, or
+  touch GitHub's API beyond a read of the checked-out tree.
+- **Structural tests, never version pins.** `tests/test_publish_workflow.py`
+  asserts the workflow *shape* — triggers, job names, dependency
+  graph, the `id-token: write` permission, the `pypi` environment
+  name, the absence of any `PYPI_API_TOKEN` reference — and never
+  pins an action version. Upgrading `actions/checkout` from `v4` to
+  `v5` (or whatever) is editorial work that should not require
+  rewriting the test suite, and the meaningful invariants
+  (trusted-publishing path, three-stage gate) survive a version
+  bump unchanged. The single end-to-end test that *does* execute
+  real commands (`python -m build` + `twine check --strict`) is
+  guarded by an import check on `build` and `twine` so the core
+  test matrix stays dependency-light.
