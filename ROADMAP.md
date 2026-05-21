@@ -11,7 +11,19 @@ Each item must include acceptance criteria so the daily task knows when it's don
 
 ## Up next
 
-_All originally-planned roadmap items (R1–R15) are complete. New milestones will be proposed here when the project's scope expands._
+_R1–R15 are complete (see Done). The following milestones were added 2026-05-21 to extend the project beyond its v0.1.0 scope. Work the FIRST unchecked item each run._
+
+- [ ] **R16. Rate-limit enforcement runtime.** R4/R5 mapped the policy `rate_limit` action to ALLOW with a note that the counter would land later. Implement a sliding-window (or token-bucket) counter keyed by `(agent_id, tool_name)` so a rule with `limit_per_minute` actually denies the N+1th call inside the window. Acceptance: a policy with `rate_limit: { limit_per_minute: 3 }` allows 3 calls and denies the 4th within 60s, audited as a refusal; the counter is monotonic-clock based and is unit-tested with an injectable clock so window expiry is deterministic.
+
+- [ ] **R17. `redact` / declassify action.** Today an offending call is either allowed or denied. Add a policy action that *transforms* arguments (e.g. masks PII matched by the taint condition) and lets the call proceed with a declassified label, recording the transformation in the audit record. Acceptance: a `strict-pii`-style rule redacts a matched field, the downstream tool receives the masked value, and the audit record captures both the rule id and the fact that redaction occurred.
+
+- [ ] **R18. `apg policy` CLI: `validate` and `explain`.** A standalone console script that (a) validates a policy YAML against the Pydantic schema with friendly error messages and exit codes, and (b) `explain` takes a tool name + identity + taint label and prints which rule would match and why (first-match trace). Acceptance: `apg policy validate policies/default.yaml` exits 0; a malformed policy exits non-zero with a line-located message; `apg policy explain` prints the matched rule id for a known web→email scenario.
+
+- [ ] **R19. Taint provenance chains.** Extend `TaintLabel` (or carry a side-channel) so each label remembers which tool/source introduced it, enabling audit records and `apg-replay` to answer "where did the `web` taint on this denied send originate?". Acceptance: a 3-hop web→summarize→email flow produces an audit record whose provenance lists the originating `web_fetch` call id.
+
+- [ ] **R20. Policy hot-reload / file-watch.** Allow a long-lived `Gateway` to reload its policy when the YAML file changes on disk (opt-in, fail-closed if the new file is invalid — keep serving the old policy and log the parse error). Acceptance: editing the policy file flips a rule's effect for subsequent calls without restarting the process; an invalid edit is rejected and the previous policy stays active.
+
+- [ ] **R21. LangChain / LlamaIndex tool adapter.** Mirror the existing OpenAI / Anthropic / MCP adapters for one more popular agent framework, duck-typed so the framework is not a runtime dependency. Acceptance: framework tool objects are gateway-wrapped, the canonical web→email exfiltration scenario is denied at send, and the adapter ships structural + scenario tests like the others.
 
 ---
 
