@@ -5,7 +5,8 @@ on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-_No changes yet._
+### Added
+- **Rate-limit enforcement runtime (R16)**: the policy `rate_limit` action is now enforced instead of mapping to ALLOW. New `agent_policy_gateway.ratelimit` module ships a `RateLimiter` — a sliding-window event log keyed by an arbitrary hashable key (the gateway uses `(agent_id, tool_name)`), with `peek(key, limit)` (read-only capacity check) and `try_acquire(key, limit)` (check-and-consume), an injectable `clock` (default `time.monotonic`) and configurable `window_seconds` (default 60). `Gateway` gains a `rate_limiter` field (default factory). `Gateway.decide` stays pure and *peeks* the limiter for a `rate_limit` rule (ALLOW while the window has room, DENY once full, no slot consumed); the stateful `execute`/`aexecute` paths route through `_decide(..., consume=True)`, which acquires a slot for an allowed call and turns an exhausted window into a `PolicyDenied` (rule id preserved, reason "rate limit exceeded: more than N calls/min for tool '...'") that is audited like any other refusal and never runs the wrapped tool. Only calls that actually run count against the budget; refused calls consume nothing. Budgets are per `(agent_id, tool_name)`. New public exports: `RateLimiter`, `DEFAULT_WINDOW_SECONDS`. 19 new tests (`tests/test_ratelimit.py` unit tests with an injectable fake clock for deterministic window expiry, plus a `TestRateLimitEnforcement` class in `tests/test_gateway.py` exercising the N-then-N+1 deny, audit of the refusal, the denied call never invoking the tool, window-expiry re-allow, per-agent-tool keys, the pure-`decide` peek, and async enforcement). Test count delta: 408 -> 427 (+19); ruff clean.
 
 ## [0.1.0] — 2026-05-17
 

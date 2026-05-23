@@ -37,11 +37,15 @@ back as a human-readable timeline. Async callers may pass a writer
 whose return value is awaitable — :meth:`aexecute` awaits it as part
 of the fail-closed-on-audit contract.
 
-Rate limiting is deferred. The policy DSL allows ``action: rate_limit``
-with a ``limit_per_minute`` field, but the runtime mapping in this
-module treats matching rules as ``ALLOW`` and records the rule id in
-the decision. A future milestone will add a counter and convert
-exhaustion into a refusal.
+Rate limiting is enforced (R16). The policy DSL allows ``action:
+rate_limit`` with a ``limit_per_minute`` field; the gateway pairs each
+matching rule with a :class:`~agent_policy_gateway.ratelimit.RateLimiter`
+— a sliding-window counter keyed by ``(agent_id, tool_name)``. The pure
+:meth:`Gateway.decide` *peeks* the limiter and reports ALLOW while the
+window has room or DENY once it is full; the stateful entry points
+(:meth:`Gateway.execute` / :meth:`Gateway.aexecute`) *consume* a slot so
+that only calls that actually run count against the budget. The N+1th
+call inside the window is refused and audited like any other denial.
 """
 
 from __future__ import annotations
@@ -54,7 +58,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from agent_policy_gateway.core import Decision, TaintLabel, ToolCall, Verdict
-from agent_policy_gateway.policy import Action, Policy
+from agent_policy_gateway.policy import Action, Policy, Rule
+from agent_policy_gateway.ratelimit import RateLimiter
 from agent_policy_gateway.taint import ToolTaintSpec, propagate
 
 # Reserved kwargs the wrapper recognises and strips before forwarding to
@@ -102,7 +107,11 @@ class PolicyReview(GatewayError):
 def _action_to_verdict(action: Action) -> Verdict:
     """Map a policy :class:`Action` to a runtime :class:`Verdict`.
 
-    ``rate_limit`` maps to ``ALLOW`` for now (see module docstring).
+    ``rate_limit`` maps to ``ALLOW`` here as a fallback; the gateway
+    resolves the real allow/deny against its :class:`RateLimiter` inside
+    :meth:`Gateway._decide`. This branch is only reached for a
+    rate-limit rule if no limiter is configured, which the
+    default-constructed gateway never does.
     """
     if action == Action.ALLOW:
         return Verdict.ALLOW
@@ -134,12 +143,17 @@ class Gateway:
         default_deny: When True, calls that match no rule are denied.
             Default False (a permissive baseline; tighten with explicit
             policies in production).
+        rate_limiter: Sliding-window counter backing ``rate_limit`` rules,
+            keyed by ``(agent_id, tool_name)``. A fresh
+            :class:`RateLimiter` (60s window, monotonic clock) by default;
+            inject one with a custom window or clock for testing.
     """
 
     policies: list[Policy] = field(default_factory=list)
     tool_specs: dict[str, ToolTaintSpec] = field(default_factory=dict)
     audit_writer: AuditWriter | None = None
     default_deny: bool = False
+    rate_limiter: RateLimiter = field(default_factory=RateLimiter)
 
     # ----- registration helpers -------------------------------------------------
 
@@ -162,30 +176,96 @@ class Gateway:
         Pure: does not invoke the underlying tool, does not write to the
         audit log, does not raise on DENY/REVIEW. Useful for tests and
         for callers that want to inspect a verdict ahead of time.
+
+        For a ``rate_limit`` rule this *peeks* the :class:`RateLimiter`
+        (read-only): it reports ALLOW while the window has room and DENY
+        once it is full, without consuming a slot. The slot is only
+        consumed when the call actually runs through :meth:`execute` or
+        :meth:`aexecute`.
+        """
+        return self._decide(call, resource=resource, consume=False)
+
+    def _match_rule(
+        self, call: ToolCall, *, resource: str | None = None
+    ) -> tuple[Rule | None, TaintLabel]:
+        """Return the first matching rule (or ``None``) and the output label.
+
+        Across policies the first policy with a match wins; within a
+        policy the first matching rule wins (delegated to
+        :meth:`Policy.first_match`).
         """
         spec = self.tool_specs.get(call.tool_name)
         output_label = propagate([call.input_label], spec)
         for policy in self.policies:
             rule = policy.first_match(call, resource=resource)
-            if rule is None:
-                continue
+            if rule is not None:
+                return rule, output_label
+        return None, output_label
+
+    def _decide(
+        self,
+        call: ToolCall,
+        *,
+        resource: str | None = None,
+        consume: bool = False,
+    ) -> Decision:
+        """Shared decision logic for :meth:`decide` and the execute paths.
+
+        When ``consume`` is False the rate-limit check is read-only (a
+        dry run, used by :meth:`decide`). When True a slot is consumed
+        for an allowed ``rate_limit`` call (used by :meth:`execute` /
+        :meth:`aexecute`); an over-limit call consumes nothing and is
+        returned as a DENY.
+        """
+        rule, output_label = self._match_rule(call, resource=resource)
+        if rule is None:
+            if self.default_deny:
+                return Decision(
+                    verdict=Verdict.DENY,
+                    rule_id=None,
+                    reason="default-deny: no policy rule matched",
+                    output_label=output_label,
+                )
             return Decision(
-                verdict=_action_to_verdict(rule.effect.action),
-                rule_id=rule.id,
-                reason=rule.effect.reason,
+                verdict=Verdict.ALLOW,
+                rule_id=None,
+                reason="default-allow: no policy rule matched",
                 output_label=output_label,
             )
-        if self.default_deny:
+        if (
+            rule.effect.action == Action.RATE_LIMIT
+            and self.rate_limiter is not None
+            and rule.effect.limit_per_minute is not None
+        ):
+            key = (call.agent_id, call.tool_name)
+            limit = rule.effect.limit_per_minute
+            if consume:
+                allowed = self.rate_limiter.try_acquire(key, limit)
+            else:
+                allowed = self.rate_limiter.peek(key, limit)
+            if allowed:
+                return Decision(
+                    verdict=Verdict.ALLOW,
+                    rule_id=rule.id,
+                    reason=rule.effect.reason,
+                    output_label=output_label,
+                )
+            reason = (
+                f"rate limit exceeded: more than {limit} calls/min "
+                f"for tool {call.tool_name!r}"
+            )
+            if rule.effect.reason:
+                reason = f"{reason} ({rule.effect.reason})"
             return Decision(
                 verdict=Verdict.DENY,
-                rule_id=None,
-                reason="default-deny: no policy rule matched",
+                rule_id=rule.id,
+                reason=reason,
                 output_label=output_label,
             )
         return Decision(
-            verdict=Verdict.ALLOW,
-            rule_id=None,
-            reason="default-allow: no policy rule matched",
+            verdict=_action_to_verdict(rule.effect.action),
+            rule_id=rule.id,
+            reason=rule.effect.reason,
             output_label=output_label,
         )
 
@@ -211,7 +291,7 @@ class Gateway:
         5. If the verdict is :attr:`Verdict.REVIEW`, raise
            :class:`PolicyReview`.
         """
-        decision = self.decide(call, resource=resource)
+        decision = self._decide(call, resource=resource, consume=True)
         if self.audit_writer is not None:
             self.audit_writer(call, decision)
         if decision.verdict == Verdict.DENY:
@@ -255,7 +335,7 @@ class Gateway:
         (mixing one async tool with a few sync ones), but the recommended
         async use is :meth:`wrap_tool_async`, which always awaits.
         """
-        decision = self.decide(call, resource=resource)
+        decision = self._decide(call, resource=resource, consume=True)
         if self.audit_writer is not None:
             audit_result = self.audit_writer(call, decision)
             if inspect.isawaitable(audit_result):

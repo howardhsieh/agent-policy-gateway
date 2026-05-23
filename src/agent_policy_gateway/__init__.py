@@ -65,6 +65,7 @@ from agent_policy_gateway.policy import (
     load_policy,
     load_policy_str,
 )
+from agent_policy_gateway.ratelimit import DEFAULT_WINDOW_SECONDS, RateLimiter
 from agent_policy_gateway.taint import (
     ToolTaintSpec,
     flows_to,
@@ -98,7 +99,9 @@ __all__ = [
     "PolicyDenied",
     "PolicyError",
     "PolicyReview",
+    "DEFAULT_WINDOW_SECONDS",
     "RESOURCE_KWARG",
+    "RateLimiter",
     "Rule",
     "Selector",
     "TaintCondition",

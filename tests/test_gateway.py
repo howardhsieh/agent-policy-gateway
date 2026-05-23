@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 
 import pytest
@@ -14,6 +15,7 @@ from agent_policy_gateway import (
     Policy,
     PolicyDenied,
     PolicyReview,
+    RateLimiter,
     Rule,
     Selector,
     TaintCondition,
@@ -533,3 +535,145 @@ rules:
             return "internal answer"
 
         assert kb_lookup("anything") == "internal answer"
+
+
+# --------------------------------------------------------------------------- #
+# R16: rate-limit enforcement through the stateful execute path               #
+# --------------------------------------------------------------------------- #
+
+
+class _FakeClock:
+    """Manually advanced clock for deterministic window tests."""
+
+    def __init__(self, start: float = 1000.0) -> None:
+        self.now = start
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+def _rate_limited_gateway(limit: int, clock: _FakeClock):
+    policy = Policy(
+        name="rl",
+        rules=(
+            Rule(
+                id="throttle",
+                when=Selector(tool="web_search"),
+                effect=Effect(action=Action.RATE_LIMIT, limit_per_minute=limit),
+            ),
+        ),
+    )
+    records, writer = _list_audit()
+    gw = Gateway(
+        policies=[policy],
+        audit_writer=writer,
+        rate_limiter=RateLimiter(window_seconds=60, clock=clock),
+    )
+    return gw, records
+
+
+class TestRateLimitEnforcement:
+    def test_allows_n_then_denies_n_plus_one(self) -> None:
+        clock = _FakeClock()
+        gw, records = _rate_limited_gateway(3, clock)
+
+        def fn() -> str:
+            return "ok"
+
+        # First 3 calls within the window succeed.
+        for _ in range(3):
+            value, decision = gw.execute(ToolCall(tool_name="web_search"), fn)
+            assert value == "ok"
+            assert decision.verdict == Verdict.ALLOW
+            assert decision.rule_id == "throttle"
+
+        # The 4th call inside the same window is refused.
+        with pytest.raises(PolicyDenied) as exc:
+            gw.execute(ToolCall(tool_name="web_search"), fn)
+        assert exc.value.decision.verdict == Verdict.DENY
+        assert exc.value.decision.rule_id == "throttle"
+        assert "rate limit exceeded" in exc.value.decision.reason
+
+    def test_refusal_is_audited(self) -> None:
+        clock = _FakeClock()
+        gw, records = _rate_limited_gateway(1, clock)
+        fn = lambda: "ok"  # noqa: E731
+        gw.execute(ToolCall(tool_name="web_search"), fn)
+        with pytest.raises(PolicyDenied):
+            gw.execute(ToolCall(tool_name="web_search"), fn)
+        # Both the allow and the deny are recorded; the last record is the refusal.
+        assert len(records) == 2
+        assert records[-1][1].verdict == Verdict.DENY
+
+    def test_denied_call_does_not_run_the_tool(self) -> None:
+        clock = _FakeClock()
+        gw, _ = _rate_limited_gateway(1, clock)
+        calls: list[int] = []
+
+        def fn() -> str:
+            calls.append(1)
+            return "ran"
+
+        gw.execute(ToolCall(tool_name="web_search"), fn)
+        with pytest.raises(PolicyDenied):
+            gw.execute(ToolCall(tool_name="web_search"), fn)
+        assert calls == [1]  # the second (denied) call never invoked fn
+
+    def test_window_expiry_allows_again(self) -> None:
+        clock = _FakeClock()
+        gw, _ = _rate_limited_gateway(2, clock)
+        fn = lambda: "ok"  # noqa: E731
+        gw.execute(ToolCall(tool_name="web_search"), fn)
+        gw.execute(ToolCall(tool_name="web_search"), fn)
+        with pytest.raises(PolicyDenied):
+            gw.execute(ToolCall(tool_name="web_search"), fn)
+        # Past the 60s window the oldest slots expire and calls flow again.
+        clock.advance(60.1)
+        value, decision = gw.execute(ToolCall(tool_name="web_search"), fn)
+        assert value == "ok"
+        assert decision.verdict == Verdict.ALLOW
+
+    def test_limit_is_per_agent_tool_key(self) -> None:
+        clock = _FakeClock()
+        gw, _ = _rate_limited_gateway(1, clock)
+        fn = lambda: "ok"  # noqa: E731
+        # agent.a exhausts its budget.
+        gw.execute(ToolCall(tool_name="web_search", agent_id="agent.a"), fn)
+        with pytest.raises(PolicyDenied):
+            gw.execute(ToolCall(tool_name="web_search", agent_id="agent.a"), fn)
+        # agent.b has an independent budget under the same rule.
+        value, decision = gw.execute(
+            ToolCall(tool_name="web_search", agent_id="agent.b"), fn
+        )
+        assert decision.verdict == Verdict.ALLOW
+
+    def test_decide_peek_does_not_consume(self) -> None:
+        clock = _FakeClock()
+        gw, _ = _rate_limited_gateway(1, clock)
+        call = ToolCall(tool_name="web_search")
+        # Pure decide() can be called repeatedly without burning the budget.
+        for _ in range(5):
+            assert gw.decide(call).verdict == Verdict.ALLOW
+        fn = lambda: "ok"  # noqa: E731
+        value, decision = gw.execute(call, fn)
+        assert decision.verdict == Verdict.ALLOW
+        # Now the single slot is consumed; decide reflects the full window.
+        assert gw.decide(call).verdict == Verdict.DENY
+
+    def test_async_execute_enforces_limit(self) -> None:
+        clock = _FakeClock()
+        gw, _ = _rate_limited_gateway(2, clock)
+
+        async def fn() -> str:
+            return "ok"
+
+        async def scenario() -> None:
+            await gw.aexecute(ToolCall(tool_name="web_search"), fn)
+            await gw.aexecute(ToolCall(tool_name="web_search"), fn)
+            with pytest.raises(PolicyDenied):
+                await gw.aexecute(ToolCall(tool_name="web_search"), fn)
+
+        asyncio.run(scenario())
