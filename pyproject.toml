@@ -19,6 +19,7 @@ classifiers = [
 ]
 
 [project.scripts]
+apg = "agent_policy_gateway.cli:main"
 apg-replay = "agent_policy_gateway.audit:replay_main"
 apg-bench = "agent_policy_gateway.bench:bench_main"
 

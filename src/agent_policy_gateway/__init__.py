@@ -24,6 +24,7 @@ from agent_policy_gateway.bench import (
     results_to_json,
     run_default_suite,
 )
+from agent_policy_gateway.cli import main as cli_main
 from agent_policy_gateway.core import (
     Decision,
     TaintLabel,
@@ -114,6 +115,7 @@ __all__ = [
     "__version__",
     "anthropic_tool_specs",
     "bench_main",
+    "cli_main",
     "benchmark",
     "dispatch_anthropic_tool_use",
     "dispatch_anthropic_tool_uses",
