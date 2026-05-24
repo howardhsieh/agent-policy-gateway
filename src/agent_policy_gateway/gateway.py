@@ -54,11 +54,11 @@ import functools
 import inspect
 import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from agent_policy_gateway.core import Decision, TaintLabel, ToolCall, Verdict
-from agent_policy_gateway.policy import Action, Policy, Rule
+from agent_policy_gateway.policy import Action, Policy, RedactSpec, Rule
 from agent_policy_gateway.ratelimit import RateLimiter
 from agent_policy_gateway.taint import ToolTaintSpec, propagate
 
@@ -121,6 +121,8 @@ def _action_to_verdict(action: Action) -> Verdict:
         return Verdict.REVIEW
     if action == Action.RATE_LIMIT:
         return Verdict.ALLOW
+    if action == Action.REDACT:
+        return Verdict.REDACT
     raise ValueError(f"unknown policy action: {action!r}")  # pragma: no cover
 
 
@@ -232,6 +234,17 @@ class Gateway:
                 reason="default-allow: no policy rule matched",
                 output_label=output_label,
             )
+        if rule.effect.action == Action.REDACT and rule.effect.redact is not None:
+            spec = rule.effect.redact
+            declassified = (
+                output_label.sources - set(spec.declassify)
+            ) | set(spec.add_label)
+            return Decision(
+                verdict=Verdict.REDACT,
+                rule_id=rule.id,
+                reason=rule.effect.reason,
+                output_label=TaintLabel(frozenset(declassified)),
+            )
         if (
             rule.effect.action == Action.RATE_LIMIT
             and self.rate_limiter is not None
@@ -269,6 +282,59 @@ class Gateway:
             output_label=output_label,
         )
 
+    def _redact_spec_for(
+        self, call: ToolCall, *, resource: str | None = None
+    ) -> RedactSpec | None:
+        """Return the :class:`RedactSpec` of the rule matching ``call``.
+
+        ``None`` when no rule matches or the matching rule is not a redact
+        rule. Used by the execute paths to fetch the transformation to apply
+        after :meth:`_decide` has already classified the call as REDACT.
+        """
+        rule, _ = self._match_rule(call, resource=resource)
+        if rule is not None and rule.effect.action == Action.REDACT:
+            return rule.effect.redact
+        return None
+
+    def _apply_redaction(
+        self,
+        call: ToolCall,
+        decision: Decision,
+        fn: Callable[..., Any],
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        *,
+        resource: str | None = None,
+    ) -> tuple[ToolCall, Decision, tuple[Any, ...], dict[str, Any]]:
+        """Mask the matched fields and record that redaction happened.
+
+        Returns an updated ``(call, decision, fn_args, fn_kwargs)`` tuple:
+
+        * ``call`` has its audit-visible ``args`` masked so the log never
+          captures the raw sensitive value.
+        * ``decision`` carries ``redacted_fields`` naming what was masked.
+        * ``fn_args`` / ``fn_kwargs`` are the arguments the downstream tool
+          will actually receive, with the matched fields masked in place.
+        """
+        spec = self._redact_spec_for(call, resource=resource)
+        if spec is None:
+            return call, decision, args, kwargs
+
+        masked_args = dict(call.args)
+        audit_changed: list[str] = []
+        for fieldname in spec.fields:
+            if fieldname in masked_args:
+                new = spec.redact_value(masked_args[fieldname])
+                if new != masked_args[fieldname]:
+                    masked_args[fieldname] = new
+                    audit_changed.append(fieldname)
+
+        fn_args, fn_kwargs, fn_changed = _redact_call_arguments(spec, fn, args, kwargs)
+        changed = list(dict.fromkeys(fn_changed + audit_changed))
+        new_call = replace(call, args=masked_args)
+        new_decision = replace(decision, redacted_fields=tuple(changed))
+        return new_call, new_decision, fn_args, fn_kwargs
+
     def execute(
         self,
         call: ToolCall,
@@ -292,6 +358,11 @@ class Gateway:
            :class:`PolicyReview`.
         """
         decision = self._decide(call, resource=resource, consume=True)
+        fn_args, fn_kwargs = args, kwargs
+        if decision.verdict == Verdict.REDACT:
+            call, decision, fn_args, fn_kwargs = self._apply_redaction(
+                call, decision, fn, args, kwargs, resource=resource
+            )
         if self.audit_writer is not None:
             self.audit_writer(call, decision)
         if decision.verdict == Verdict.DENY:
@@ -306,7 +377,7 @@ class Gateway:
                 decision=decision,
                 call=call,
             )
-        result = fn(*args, **kwargs)
+        result = fn(*fn_args, **fn_kwargs)
         return result, decision
 
     # ----- async core execution -------------------------------------------------
@@ -336,6 +407,11 @@ class Gateway:
         async use is :meth:`wrap_tool_async`, which always awaits.
         """
         decision = self._decide(call, resource=resource, consume=True)
+        fn_args, fn_kwargs = args, kwargs
+        if decision.verdict == Verdict.REDACT:
+            call, decision, fn_args, fn_kwargs = self._apply_redaction(
+                call, decision, fn, args, kwargs, resource=resource
+            )
         if self.audit_writer is not None:
             audit_result = self.audit_writer(call, decision)
             if inspect.isawaitable(audit_result):
@@ -352,7 +428,7 @@ class Gateway:
                 decision=decision,
                 call=call,
             )
-        result = fn(*args, **kwargs)
+        result = fn(*fn_args, **fn_kwargs)
         if inspect.isawaitable(result):
             result = await result
         return result, decision
@@ -553,6 +629,46 @@ class Gateway:
         if fn is not None:
             return decorator(fn)
         return decorator
+
+
+def _redact_call_arguments(
+    spec: RedactSpec,
+    fn: Callable[..., Any],
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+) -> tuple[tuple[Any, ...], dict[str, Any], list[str]]:
+    """Mask ``spec.fields`` in the arguments destined for ``fn``.
+
+    Binds ``fn``'s signature so a field passed positionally is masked just
+    like a keyword one, then rebuilds the call. If the signature cannot be
+    introspected or bound (builtins, mismatched arity) the helper falls
+    back to masking matching keyword arguments only — the call still runs
+    and is logged, it just cannot reach positional-only fields.
+
+    Returns ``(fn_args, fn_kwargs, changed_fields)``.
+    """
+    try:
+        sig = inspect.signature(fn)
+        bound = sig.bind(*args, **kwargs)
+    except (TypeError, ValueError):
+        new_kwargs = dict(kwargs)
+        changed: list[str] = []
+        for fieldname in spec.fields:
+            if fieldname in new_kwargs:
+                new = spec.redact_value(new_kwargs[fieldname])
+                if new != new_kwargs[fieldname]:
+                    new_kwargs[fieldname] = new
+                    changed.append(fieldname)
+        return args, new_kwargs, changed
+
+    changed = []
+    for fieldname in spec.fields:
+        if fieldname in bound.arguments:
+            new = spec.redact_value(bound.arguments[fieldname])
+            if new != bound.arguments[fieldname]:
+                bound.arguments[fieldname] = new
+                changed.append(fieldname)
+    return bound.args, bound.kwargs, changed
 
 
 def _format_refusal(prefix: str, decision: Decision) -> str:

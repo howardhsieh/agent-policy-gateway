@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import re
 from collections.abc import Iterable
 from enum import Enum
 from pathlib import Path
@@ -65,6 +66,7 @@ class Action(str, Enum):
     DENY = "deny"
     REVIEW = "review"
     RATE_LIMIT = "rate_limit"
+    REDACT = "redact"
 
 
 class TaintCondition(BaseModel):
@@ -137,6 +139,75 @@ class Selector(BaseModel):
         return True
 
 
+class RedactSpec(BaseModel):
+    """How a ``redact`` effect transforms a tool call's arguments.
+
+    A redact effect masks one or more argument *fields* in place and lets
+    the call proceed with a *declassified* output label. It is the middle
+    ground between ``allow`` (let tainted data through untouched) and
+    ``deny`` (refuse the call): the sensitive substring is removed and the
+    now-clean value is forwarded to the downstream tool.
+
+    Attributes:
+        fields: Argument names to transform. Required and non-empty.
+        pattern: Optional regular expression. When set, only the
+            substrings matching ``pattern`` inside each field are replaced
+            with ``mask`` (so surrounding text is preserved). When unset,
+            the entire field value is replaced with ``mask``.
+        mask: Replacement text. Defaults to ``"[REDACTED]"``.
+        declassify: Taint sources stripped from the output label once the
+            fields are masked (e.g. ``pii``).
+        add_label: Taint sources added to the output label to mark that a
+            vetted redaction ran (e.g. ``trusted-redactor``).
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    fields: tuple[str, ...]
+    pattern: str | None = None
+    mask: str = "[REDACTED]"
+    declassify: tuple[str, ...] = ()
+    add_label: tuple[str, ...] = ()
+
+    @field_validator("fields")
+    @classmethod
+    def _fields_nonempty(cls, v: tuple[str, ...]) -> tuple[str, ...]:
+        if not v:
+            raise ValueError("redact.fields must list at least one field name")
+        if any(not f.strip() for f in v):
+            raise ValueError("redact.fields entries must be non-empty strings")
+        return v
+
+    @field_validator("pattern")
+    @classmethod
+    def _pattern_compiles(cls, v: str | None) -> str | None:
+        if v is not None:
+            try:
+                re.compile(v)
+            except re.error as e:
+                raise ValueError(f"redact.pattern is not a valid regex: {e}") from e
+        return v
+
+    def compiled_pattern(self) -> re.Pattern[str] | None:
+        """Return the compiled ``pattern`` regex, or ``None`` when unset."""
+        return re.compile(self.pattern) if self.pattern is not None else None
+
+    def redact_value(self, value: object) -> object:
+        """Return the masked form of a single field ``value``.
+
+        With a ``pattern`` set, string values have matching substrings
+        replaced and non-string values are returned untouched (a regex
+        cannot meaningfully match them). With no ``pattern`` the whole
+        value is replaced by ``mask`` regardless of type.
+        """
+        pat = self.compiled_pattern()
+        if pat is not None:
+            if isinstance(value, str):
+                return pat.sub(self.mask, value)
+            return value
+        return self.mask
+
+
 class Effect(BaseModel):
     """The action a matched rule applies to a tool call."""
 
@@ -145,6 +216,7 @@ class Effect(BaseModel):
     action: Action
     reason: str = ""
     limit_per_minute: int | None = None
+    redact: RedactSpec | None = None
 
     @model_validator(mode="after")
     def _check_shape(self) -> Effect:
@@ -159,6 +231,14 @@ class Effect(BaseModel):
                     "limit_per_minute is only allowed for action=rate_limit "
                     f"(got action={self.action.value})"
                 )
+        if self.action == Action.REDACT:
+            if self.redact is None:
+                raise ValueError("redact effect requires a redact block")
+        elif self.redact is not None:
+            raise ValueError(
+                "redact is only allowed for action=redact "
+                f"(got action={self.action.value})"
+            )
         return self
 
 
@@ -265,6 +345,7 @@ __all__ = [
     "Effect",
     "Policy",
     "PolicyError",
+    "RedactSpec",
     "Rule",
     "Selector",
     "TaintCondition",

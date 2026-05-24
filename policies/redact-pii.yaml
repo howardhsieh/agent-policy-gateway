@@ -1,0 +1,42 @@
+version: 1
+name: redact-pii
+description: |
+  Declassification policy. Rather than denying outbound calls that carry
+  `pii`, a vetted redaction step masks the sensitive fields in place and lets
+  the call proceed with a declassified label. Email bodies have anything that
+  looks like an email address masked; generic log events have their whole
+  `payload` field replaced. Both rules strip the `pii` source and stamp a
+  `trusted-redactor` marker on the output so downstream sinks can tell the
+  data has been through a vetted redactor.
+rules:
+  - id: redact-pii-in-email
+    description: Mask email addresses in outbound mail bodies instead of denying.
+    when:
+      tool: send_email
+      taint:
+        any_of: [pii]
+        none_of: [trusted-redactor]
+    effect:
+      action: redact
+      reason: PII masked in email body before send.
+      redact:
+        fields: [body]
+        pattern: '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}'
+        mask: "[REDACTED-EMAIL]"
+        declassify: [pii]
+        add_label: [trusted-redactor]
+
+  - id: redact-pii-in-log
+    description: Replace the whole payload of a tainted log event.
+    when:
+      tool: log_event
+      taint:
+        any_of: [pii]
+        none_of: [trusted-redactor]
+    effect:
+      action: redact
+      reason: PII payload masked before logging.
+      redact:
+        fields: [payload]
+        declassify: [pii]
+        add_label: [trusted-redactor]

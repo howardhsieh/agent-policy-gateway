@@ -16,6 +16,7 @@ from agent_policy_gateway import (
     PolicyDenied,
     PolicyReview,
     RateLimiter,
+    RedactSpec,
     Rule,
     Selector,
     TaintCondition,
@@ -677,3 +678,169 @@ class TestRateLimitEnforcement:
                 await gw.aexecute(ToolCall(tool_name="web_search"), fn)
 
         asyncio.run(scenario())
+
+
+# --------------------------------------------------------------------------- #
+# Redact / declassify action (R17)                                            #
+# --------------------------------------------------------------------------- #
+
+
+def _redact_email_policy() -> Policy:
+    return Policy(
+        name="redact-email",
+        rules=(
+            Rule(
+                id="redact-pii-in-email",
+                when=Selector(
+                    tool="send_email",
+                    taint=TaintCondition(
+                        any_of=("pii",), none_of=("trusted-redactor",)
+                    ),
+                ),
+                effect=Effect(
+                    action=Action.REDACT,
+                    reason="mask email addresses before send",
+                    redact=RedactSpec(
+                        fields=("body",),
+                        pattern=r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}",
+                        mask="[REDACTED-EMAIL]",
+                        declassify=("pii",),
+                        add_label=("trusted-redactor",),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+
+class TestRedactAction:
+    def test_decide_reports_redact_and_declassifies_label(self) -> None:
+        gw = Gateway(policies=[_redact_email_policy()])
+        call = ToolCall(
+            tool_name="send_email",
+            args={"to": "ops@example.com", "body": "reach me at bob@corp.com"},
+            input_label=TaintLabel.of("pii"),
+        )
+        d = gw.decide(call)
+        assert d.verdict == Verdict.REDACT
+        assert d.rule_id == "redact-pii-in-email"
+        # pii stripped, trusted-redactor stamped on the output label.
+        assert d.output_label.sources == frozenset({"trusted-redactor"})
+
+    def test_downstream_tool_receives_masked_value(self) -> None:
+        gw = Gateway(policies=[_redact_email_policy()])
+        seen: dict[str, str] = {}
+
+        @gw.wrap_tool(tool_name="send_email", resource_arg="to")
+        def send_email(to: str, body: str) -> str:
+            seen["body"] = body
+            return "sent"
+
+        result = send_email(
+            "ops@example.com",
+            "reach me at bob@corp.com",
+            apg_input_label=TaintLabel.of("pii"),
+        )
+        assert result == "sent"
+        # The tool never saw the raw email address.
+        assert seen["body"] == "reach me at [REDACTED-EMAIL]"
+
+    def test_audit_record_captures_rule_and_redaction(self) -> None:
+        records, writer = _list_audit()
+        gw = Gateway(policies=[_redact_email_policy()], audit_writer=writer)
+
+        @gw.wrap_tool(tool_name="send_email")
+        def send_email(to: str, body: str) -> str:
+            return "sent"
+
+        send_email(
+            "ops@example.com",
+            "reach me at bob@corp.com",
+            apg_input_label=TaintLabel.of("pii"),
+        )
+        assert len(records) == 1
+        call, decision = records[0]
+        assert decision.verdict == Verdict.REDACT
+        assert decision.rule_id == "redact-pii-in-email"
+        assert decision.redacted_fields == ("body",)
+        # The audit log itself stores the masked body, never the raw PII.
+        assert "bob@corp.com" not in call.args["body"]
+        assert call.args["body"] == "reach me at [REDACTED-EMAIL]"
+        # And the record round-trips through its dict form.
+        assert Decision.from_dict(decision.to_dict()) == decision
+
+    def test_redaction_is_recorded_in_decision_serialization(self) -> None:
+        d = Decision(verdict=Verdict.REDACT, redacted_fields=("body", "subject"))
+        assert d.to_dict()["redacted_fields"] == ["body", "subject"]
+        # Empty redacted_fields stays out of the serialized form.
+        plain = Decision(verdict=Verdict.ALLOW)
+        assert "redacted_fields" not in plain.to_dict()
+
+    def test_whole_field_mask_without_pattern(self) -> None:
+        policy = Policy(
+            name="redact-log",
+            rules=(
+                Rule(
+                    id="mask-payload",
+                    when=Selector(tool="log_event"),
+                    effect=Effect(
+                        action=Action.REDACT,
+                        redact=RedactSpec(fields=("payload",), declassify=("pii",)),
+                    ),
+                ),
+            ),
+        )
+        gw = Gateway(policies=[policy])
+        seen: dict[str, object] = {}
+
+        @gw.wrap_tool(tool_name="log_event")
+        def log_event(payload: object) -> str:
+            seen["payload"] = payload
+            return "logged"
+
+        log_event(
+            {"ssn": "123-45-6789"},
+            apg_input_label=TaintLabel.of("pii"),
+        )
+        assert seen["payload"] == "[REDACTED]"
+
+    def test_async_redaction_masks_and_proceeds(self) -> None:
+        gw = Gateway(policies=[_redact_email_policy()])
+        seen: dict[str, str] = {}
+
+        @gw.wrap_tool_async(tool_name="send_email")
+        async def send_email(to: str, body: str) -> str:
+            seen["body"] = body
+            return "sent"
+
+        async def scenario() -> str:
+            return await send_email(
+                "ops@example.com",
+                "reach me at bob@corp.com",
+                apg_input_label=TaintLabel.of("pii"),
+            )
+
+        result = asyncio.run(scenario())
+        assert result == "sent"
+        assert seen["body"] == "reach me at [REDACTED-EMAIL]"
+
+    def test_redact_only_targets_named_fields(self) -> None:
+        gw = Gateway(policies=[_redact_email_policy()])
+        seen: dict[str, str] = {}
+
+        @gw.wrap_tool(tool_name="send_email")
+        def send_email(to: str, body: str) -> str:
+            seen["to"] = to
+            seen["body"] = body
+            return "sent"
+
+        send_email(
+            "bob@corp.com",
+            "no address here",
+            apg_input_label=TaintLabel.of("pii"),
+        )
+        # `to` is not in redact.fields, so it is left untouched even though it
+        # also contains an email address.
+        assert seen["to"] == "bob@corp.com"
+        # `body` had no match for the pattern, so it is unchanged too.
+        assert seen["body"] == "no address here"

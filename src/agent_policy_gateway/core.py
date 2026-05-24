@@ -23,6 +23,7 @@ class Verdict(str, Enum):
     ALLOW = "allow"
     DENY = "deny"
     REVIEW = "review"
+    REDACT = "redact"
 
 
 @dataclass(frozen=True)
@@ -108,14 +109,20 @@ class Decision:
     rule_id: str | None = None
     reason: str = ""
     output_label: TaintLabel = field(default_factory=TaintLabel)
+    redacted_fields: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "verdict": self.verdict.value,
             "rule_id": self.rule_id,
             "reason": self.reason,
             "output_label": self.output_label.to_dict(),
         }
+        # Serialized only when redaction actually happened, so legacy records
+        # and the common allow/deny path keep their original shape.
+        if self.redacted_fields:
+            out["redacted_fields"] = list(self.redacted_fields)
+        return out
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Decision:
@@ -124,6 +131,7 @@ class Decision:
             rule_id=d.get("rule_id"),
             reason=d.get("reason", ""),
             output_label=TaintLabel.from_dict(d.get("output_label") or {}),
+            redacted_fields=tuple(d.get("redacted_fields", ())),
         )
 
 

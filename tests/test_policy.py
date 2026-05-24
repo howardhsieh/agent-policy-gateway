@@ -31,6 +31,7 @@ from agent_policy_gateway import (
     Effect,
     Policy,
     PolicyError,
+    RedactSpec,
     Rule,
     Selector,
     TaintCondition,
@@ -357,10 +358,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 POLICIES_DIR = REPO_ROOT / "policies"
 
 
-def test_policies_directory_has_three_examples() -> None:
+def test_policies_directory_has_four_examples() -> None:
     yamls = sorted(POLICIES_DIR.glob("*.yaml"))
     names = {p.name for p in yamls}
-    assert names == {"default.yaml", "research-agent.yaml", "strict-pii.yaml"}
+    assert names == {
+        "default.yaml",
+        "redact-pii.yaml",
+        "research-agent.yaml",
+        "strict-pii.yaml",
+    }
 
 
 def test_every_example_policy_loads_clean() -> None:
@@ -456,3 +462,128 @@ class TestStrictPiiPolicy:
         rule = policy.first_match(call)
         assert rule is not None and rule.id == "review-pii-to-storage"
         assert rule.effect.action == Action.REVIEW
+
+
+# ---------------------------------------------------------------------------
+# RedactSpec + redact effect validation (R17)
+# ---------------------------------------------------------------------------
+
+
+class TestRedactSpec:
+    def test_whole_value_mask_when_no_pattern(self) -> None:
+        spec = RedactSpec(fields=("body",))
+        assert spec.redact_value("secret@example.com") == "[REDACTED]"
+        # Non-string values are masked too when there is no pattern.
+        assert spec.redact_value({"k": "v"}) == "[REDACTED]"
+
+    def test_pattern_masks_only_matching_substrings(self) -> None:
+        spec = RedactSpec(
+            fields=("body",),
+            pattern=r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}",
+            mask="[EMAIL]",
+        )
+        out = spec.redact_value("ping bob@example.com now")
+        assert out == "ping [EMAIL] now"
+
+    def test_pattern_leaves_non_strings_untouched(self) -> None:
+        spec = RedactSpec(fields=("body",), pattern=r"\d+")
+        sentinel = {"k": 1}
+        assert spec.redact_value(sentinel) is sentinel
+
+    def test_empty_fields_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            RedactSpec(fields=())
+
+    def test_blank_field_name_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            RedactSpec(fields=("   ",))
+
+    def test_invalid_pattern_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            RedactSpec(fields=("body",), pattern="(")
+
+
+class TestRedactEffectShape:
+    def test_redact_effect_requires_redact_block(self) -> None:
+        with pytest.raises(ValidationError):
+            Effect(action=Action.REDACT)
+
+    def test_redact_block_forbidden_for_other_actions(self) -> None:
+        with pytest.raises(ValidationError):
+            Effect(action=Action.ALLOW, redact=RedactSpec(fields=("body",)))
+
+    def test_valid_redact_effect(self) -> None:
+        eff = Effect(
+            action=Action.REDACT,
+            redact=RedactSpec(fields=("body",), declassify=("pii",)),
+        )
+        assert eff.action == Action.REDACT
+        assert eff.redact is not None
+        assert eff.redact.fields == ("body",)
+
+    def test_redact_effect_loads_from_yaml(self) -> None:
+        text = textwrap.dedent(
+            """
+            version: 1
+            name: redact-test
+            rules:
+              - id: mask-body
+                when:
+                  tool: send_email
+                  taint:
+                    any_of: [pii]
+                effect:
+                  action: redact
+                  redact:
+                    fields: [body]
+                    mask: "[X]"
+                    declassify: [pii]
+                    add_label: [trusted-redactor]
+            """
+        )
+        pol = load_policy_str(text)
+        rule = pol.rules[0]
+        assert rule.effect.action == Action.REDACT
+        assert rule.effect.redact.mask == "[X]"
+        assert rule.effect.redact.declassify == ("pii",)
+
+    def test_redact_rule_with_unknown_redact_key_rejected(self) -> None:
+        text = textwrap.dedent(
+            """
+            version: 1
+            name: bad
+            rules:
+              - id: r
+                effect:
+                  action: redact
+                  redact:
+                    fields: [body]
+                    bogus: 1
+            """
+        )
+        with pytest.raises(PolicyError):
+            load_policy_str(text)
+
+
+class TestRedactPiiPolicy:
+    @pytest.fixture()
+    def policy(self) -> Policy:
+        return load_policy(POLICIES_DIR / "redact-pii.yaml")
+
+    def test_email_pii_matches_redact_rule(self, policy: Policy) -> None:
+        call = ToolCall(tool_name="send_email", input_label=TaintLabel.of("pii"))
+        rule = policy.first_match(call)
+        assert rule is not None and rule.id == "redact-pii-in-email"
+        assert rule.effect.action == Action.REDACT
+
+    def test_already_redacted_email_falls_through(self, policy: Policy) -> None:
+        call = ToolCall(
+            tool_name="send_email",
+            input_label=TaintLabel.of("pii", "trusted-redactor"),
+        )
+        assert policy.first_match(call) is None
+
+    def test_log_event_pii_matches_redact_rule(self, policy: Policy) -> None:
+        call = ToolCall(tool_name="log_event", input_label=TaintLabel.of("pii"))
+        rule = policy.first_match(call)
+        assert rule is not None and rule.id == "redact-pii-in-log"

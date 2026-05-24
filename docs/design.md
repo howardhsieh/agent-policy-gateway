@@ -353,3 +353,47 @@ design decisions are worth recording:
   real commands (`python -m build` + `twine check --strict`) is
   guarded by an import check on `build` and `twine` so the core
   test matrix stays dependency-light.
+
+## Redact / declassify action (R17)
+
+The [Declassification](#declassification) section above describes
+declassification as a *tool* privilege: a vetted redactor declares
+`ToolTaintSpec(declassifies={"pii"})` and the gateway strips the label
+from that tool's output. R17 adds the *policy-driven* counterpart — a
+`redact` effect that lets an operator declassify a flow at the policy
+layer, transforming the call's arguments in place rather than trusting a
+dedicated redactor tool to exist.
+
+- **A third disposition between allow and deny.** Before R17 a matched
+  rule could only let a call through untouched or refuse it. `redact`
+  fills the gap the original Declassification note anticipated: the
+  sensitive substring is masked and the now-clean value proceeds, so a
+  once-tainted flow has an escape that is neither "refuse forever" nor
+  "trust blindly". The operator declares it in the policy and audits it
+  there; it is still *not* something the LLM can request at runtime.
+
+- **Mask the downstream args and the audit args, in lock-step.** The
+  transformation is applied twice from one `RedactSpec`: to the
+  arguments the wrapped tool actually receives (bound through the
+  function's signature so a positionally-passed field is reached the
+  same as a keyword one, with a kwargs-only fallback when a callable
+  cannot be introspected) and to the audit-visible `call.args`. Masking
+  the audit copy is the point, not a side effect — an audit log that
+  recorded the raw value would defeat the redaction. `redacted_fields`
+  on the `Decision` records *that* redaction happened and *which* fields
+  were touched, so a reviewer sees the rule id and the scope without the
+  payload.
+
+- **REDACT proceeds like ALLOW.** A new `Verdict.REDACT` makes the
+  timeline honest (the replay tool shows `REDACT`, not `ALLOW`), but the
+  execute paths treat it as a non-refusal: only `DENY` and `REVIEW`
+  raise. `Decision.redacted_fields` is serialized only when non-empty so
+  every pre-R17 audit record and the common allow/deny path keep their
+  exact prior shape and round-trip unchanged.
+
+- **Pattern semantics.** With a `pattern` set, only matching substrings
+  inside a string field are masked (surrounding text is preserved) and
+  non-string values are left untouched — a regex cannot meaningfully
+  match them. With no pattern the whole field value is replaced by
+  `mask`. The pattern is compiled at policy-load time so a bad regex is
+  a load error, not a runtime surprise on the first matching call.
