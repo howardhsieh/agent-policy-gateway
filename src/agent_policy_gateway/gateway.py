@@ -57,10 +57,20 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from agent_policy_gateway.core import Decision, TaintLabel, ToolCall, Verdict
+from agent_policy_gateway.core import (
+    Decision,
+    Provenance,
+    TaintLabel,
+    ToolCall,
+    Verdict,
+)
 from agent_policy_gateway.policy import Action, Policy, RedactSpec, Rule
 from agent_policy_gateway.ratelimit import RateLimiter
-from agent_policy_gateway.taint import ToolTaintSpec, propagate
+from agent_policy_gateway.taint import (
+    ToolTaintSpec,
+    propagate,
+    propagate_provenance,
+)
 
 # Reserved kwargs the wrapper recognises and strips before forwarding to
 # the wrapped function. Surfaced as module constants so tests and callers
@@ -69,9 +79,16 @@ INPUT_LABEL_KWARG = "apg_input_label"
 AGENT_ID_KWARG = "apg_agent_id"
 CALL_ID_KWARG = "apg_call_id"
 RESOURCE_KWARG = "apg_resource"
+PROVENANCE_KWARG = "apg_input_provenance"
 
 _RESERVED_KWARGS: frozenset[str] = frozenset(
-    {INPUT_LABEL_KWARG, AGENT_ID_KWARG, CALL_ID_KWARG, RESOURCE_KWARG}
+    {
+        INPUT_LABEL_KWARG,
+        AGENT_ID_KWARG,
+        CALL_ID_KWARG,
+        RESOURCE_KWARG,
+        PROVENANCE_KWARG,
+    }
 )
 
 AuditWriter = Callable[[ToolCall, Decision], None]
@@ -156,6 +173,7 @@ class Gateway:
     audit_writer: AuditWriter | None = None
     default_deny: bool = False
     rate_limiter: RateLimiter = field(default_factory=RateLimiter)
+    track_provenance: bool = False
 
     # ----- registration helpers -------------------------------------------------
 
@@ -189,20 +207,35 @@ class Gateway:
 
     def _match_rule(
         self, call: ToolCall, *, resource: str | None = None
-    ) -> tuple[Rule | None, TaintLabel]:
-        """Return the first matching rule (or ``None``) and the output label.
+    ) -> tuple[Rule | None, TaintLabel, Provenance]:
+        """Return the first matching rule, the output label, and provenance.
 
         Across policies the first policy with a match wins; within a
         policy the first matching rule wins (delegated to
         :meth:`Policy.first_match`).
+
+        The output provenance chain is populated only when
+        :attr:`track_provenance` is enabled; otherwise it is the empty
+        chain, so the resulting :class:`Decision` is byte-for-byte what it
+        was before provenance tracking existed.
         """
         spec = self.tool_specs.get(call.tool_name)
         output_label = propagate([call.input_label], spec)
+        if self.track_provenance:
+            output_prov = propagate_provenance(
+                [call.input_provenance],
+                spec,
+                tool_name=call.tool_name,
+                call_id=call.call_id,
+                output_label=output_label,
+            )
+        else:
+            output_prov = Provenance()
         for policy in self.policies:
             rule = policy.first_match(call, resource=resource)
             if rule is not None:
-                return rule, output_label
-        return None, output_label
+                return rule, output_label, output_prov
+        return None, output_label, output_prov
 
     def _decide(
         self,
@@ -219,7 +252,9 @@ class Gateway:
         :meth:`aexecute`); an over-limit call consumes nothing and is
         returned as a DENY.
         """
-        rule, output_label = self._match_rule(call, resource=resource)
+        rule, output_label, output_prov = self._match_rule(
+            call, resource=resource
+        )
         if rule is None:
             if self.default_deny:
                 return Decision(
@@ -227,12 +262,14 @@ class Gateway:
                     rule_id=None,
                     reason="default-deny: no policy rule matched",
                     output_label=output_label,
+                    output_provenance=output_prov,
                 )
             return Decision(
                 verdict=Verdict.ALLOW,
                 rule_id=None,
                 reason="default-allow: no policy rule matched",
                 output_label=output_label,
+                output_provenance=output_prov,
             )
         if rule.effect.action == Action.REDACT and rule.effect.redact is not None:
             spec = rule.effect.redact
@@ -244,6 +281,7 @@ class Gateway:
                 rule_id=rule.id,
                 reason=rule.effect.reason,
                 output_label=TaintLabel(frozenset(declassified)),
+                output_provenance=output_prov.restrict_to(declassified),
             )
         if (
             rule.effect.action == Action.RATE_LIMIT
@@ -262,6 +300,7 @@ class Gateway:
                     rule_id=rule.id,
                     reason=rule.effect.reason,
                     output_label=output_label,
+                    output_provenance=output_prov,
                 )
             reason = (
                 f"rate limit exceeded: more than {limit} calls/min "
@@ -274,12 +313,14 @@ class Gateway:
                 rule_id=rule.id,
                 reason=reason,
                 output_label=output_label,
+                output_provenance=output_prov,
             )
         return Decision(
             verdict=_action_to_verdict(rule.effect.action),
             rule_id=rule.id,
             reason=rule.effect.reason,
             output_label=output_label,
+            output_provenance=output_prov,
         )
 
     def _redact_spec_for(
@@ -291,7 +332,7 @@ class Gateway:
         rule. Used by the execute paths to fetch the transformation to apply
         after :meth:`_decide` has already classified the call as REDACT.
         """
-        rule, _ = self._match_rule(call, resource=resource)
+        rule, _, _ = self._match_rule(call, resource=resource)
         if rule is not None and rule.effect.action == Action.REDACT:
             return rule.effect.redact
         return None
@@ -497,6 +538,9 @@ class Gateway:
                 agent_id = kwargs.pop(AGENT_ID_KWARG, None)
                 call_id = kwargs.pop(CALL_ID_KWARG, None) or uuid.uuid4().hex
                 explicit_resource = kwargs.pop(RESOURCE_KWARG, None)
+                input_provenance = (
+                    kwargs.pop(PROVENANCE_KWARG, None) or Provenance()
+                )
 
                 # Bind through the function's signature so positional args
                 # are recorded in the audit log alongside kwargs. Fall back
@@ -528,6 +572,7 @@ class Gateway:
                     input_label=input_label,
                     agent_id=agent_id,
                     call_id=call_id,
+                    input_provenance=input_provenance,
                 )
                 value, _ = self.execute(
                     call, target, *args, resource=resource, **kwargs
@@ -591,6 +636,9 @@ class Gateway:
                 agent_id = kwargs.pop(AGENT_ID_KWARG, None)
                 call_id = kwargs.pop(CALL_ID_KWARG, None) or uuid.uuid4().hex
                 explicit_resource = kwargs.pop(RESOURCE_KWARG, None)
+                input_provenance = (
+                    kwargs.pop(PROVENANCE_KWARG, None) or Provenance()
+                )
 
                 # Same signature-binding strategy as wrap_tool: fall back
                 # to raw kwargs if the caller's arity does not match the
@@ -618,6 +666,7 @@ class Gateway:
                     input_label=input_label,
                     agent_id=agent_id,
                     call_id=call_id,
+                    input_provenance=input_provenance,
                 )
                 value, _ = await self.aexecute(
                     call, target, *args, resource=resource, **kwargs
@@ -685,6 +734,7 @@ __all__ = [
     "GatewayError",
     "INPUT_LABEL_KWARG",
     "PolicyDenied",
+    "PROVENANCE_KWARG",
     "PolicyReview",
     "RESOURCE_KWARG",
 ]

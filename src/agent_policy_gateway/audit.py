@@ -252,6 +252,12 @@ def format_record(record: AuditRecord) -> str:
         lines.append(f"  input:  {sorted(call.input_label.sources)}")
     if dec.output_label.sources:
         lines.append(f"  output: {sorted(dec.output_label.sources)}")
+    if not dec.output_provenance.is_empty():
+        origins = ", ".join(
+            f"{e.source}<-{e.tool_name}@{e.call_id or '?'}"
+            for e in dec.output_provenance.entries
+        )
+        lines.append(f"  origin: {origins}")
     if call.args:
         args_json = json.dumps(
             call.args, ensure_ascii=False, sort_keys=True, default=str

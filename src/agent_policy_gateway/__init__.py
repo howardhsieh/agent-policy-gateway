@@ -27,6 +27,8 @@ from agent_policy_gateway.bench import (
 from agent_policy_gateway.cli import main as cli_main
 from agent_policy_gateway.core import (
     Decision,
+    Provenance,
+    ProvenanceEntry,
     TaintLabel,
     ToolCall,
     Verdict,
@@ -37,6 +39,7 @@ from agent_policy_gateway.gateway import (
     AGENT_ID_KWARG,
     CALL_ID_KWARG,
     INPUT_LABEL_KWARG,
+    PROVENANCE_KWARG,
     RESOURCE_KWARG,
     AuditWriter,
     Gateway,
@@ -74,6 +77,7 @@ from agent_policy_gateway.taint import (
     join,
     join_all,
     propagate,
+    propagate_provenance,
     subsumes,
 )
 
@@ -101,6 +105,9 @@ __all__ = [
     "PolicyDenied",
     "PolicyError",
     "PolicyReview",
+    "PROVENANCE_KWARG",
+    "Provenance",
+    "ProvenanceEntry",
     "DEFAULT_WINDOW_SECONDS",
     "RESOURCE_KWARG",
     "RateLimiter",
@@ -132,6 +139,7 @@ __all__ = [
     "load_policy_str",
     "openai_tool_specs",
     "propagate",
+    "propagate_provenance",
     "read_audit",
     "replay_main",
     "results_to_json",

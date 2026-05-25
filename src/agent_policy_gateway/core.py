@@ -63,6 +63,97 @@ class TaintLabel:
 
 
 @dataclass(frozen=True)
+class ProvenanceEntry:
+    """A single record of where a taint source entered an information flow.
+
+    ``source`` is the taint label string (e.g. ``"web"``); ``tool_name`` and
+    ``call_id`` identify the tool call that introduced it. ``call_id`` is the
+    same id carried on the :class:`ToolCall`, so an auditor can pivot from a
+    provenance entry straight back to the originating record in the log.
+    """
+
+    source: str
+    tool_name: str
+    call_id: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "source": self.source,
+            "tool_name": self.tool_name,
+            "call_id": self.call_id,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> ProvenanceEntry:
+        return cls(
+            source=str(d["source"]),
+            tool_name=str(d["tool_name"]),
+            call_id=d.get("call_id"),
+        )
+
+
+@dataclass(frozen=True)
+class Provenance:
+    """A side-channel taint provenance chain.
+
+    A :class:`TaintLabel` answers *what* sources a value carries; a
+    ``Provenance`` answers *where each source came from*. It is kept as a
+    separate value (not folded into :class:`TaintLabel`) so the lattice
+    algebra and label equality used throughout the gateway stay unchanged.
+
+    The chain is an ordered tuple of :class:`ProvenanceEntry` records: the
+    first entry for a given source is its origin, later entries record hops
+    that re-introduced the same source. Duplicate entries are dropped on
+    construction so merging is idempotent.
+    """
+
+    entries: tuple[ProvenanceEntry, ...] = ()
+
+    def __post_init__(self) -> None:
+        seen: set[tuple[str, str, str | None]] = set()
+        deduped: list[ProvenanceEntry] = []
+        for e in self.entries:
+            key = (e.source, e.tool_name, e.call_id)
+            if key not in seen:
+                seen.add(key)
+                deduped.append(e)
+        object.__setattr__(self, "entries", tuple(deduped))
+
+    def is_empty(self) -> bool:
+        return not self.entries
+
+    def add(self, entry: ProvenanceEntry) -> Provenance:
+        """Return a new provenance with ``entry`` appended (deduped)."""
+        return Provenance(self.entries + (entry,))
+
+    def merge(self, other: Provenance) -> Provenance:
+        """Return the union of this chain and ``other``, order-preserving."""
+        return Provenance(self.entries + other.entries)
+
+    def origins(self, source: str) -> tuple[ProvenanceEntry, ...]:
+        """Return every entry recorded for ``source`` in chain order."""
+        return tuple(e for e in self.entries if e.source == source)
+
+    def restrict_to(self, sources: frozenset[str] | set[str]) -> Provenance:
+        """Drop entries whose source is not in ``sources``.
+
+        Used after declassification so a stripped source carries no
+        lingering provenance into the output.
+        """
+        keep = set(sources)
+        return Provenance(tuple(e for e in self.entries if e.source in keep))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"entries": [e.to_dict() for e in self.entries]}
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> Provenance:
+        return cls(
+            tuple(ProvenanceEntry.from_dict(e) for e in d.get("entries", []))
+        )
+
+
+@dataclass(frozen=True)
 class ToolCall:
     """A request from an agent to invoke a tool.
 
@@ -75,15 +166,20 @@ class ToolCall:
     input_label: TaintLabel = field(default_factory=TaintLabel)
     agent_id: str | None = None
     call_id: str | None = None
+    input_provenance: Provenance = field(default_factory=Provenance)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "tool_name": self.tool_name,
             "args": dict(self.args),
             "input_label": self.input_label.to_dict(),
             "agent_id": self.agent_id,
             "call_id": self.call_id,
         }
+        # Serialized only when present so legacy records keep their shape.
+        if not self.input_provenance.is_empty():
+            out["input_provenance"] = self.input_provenance.to_dict()
+        return out
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> ToolCall:
@@ -93,6 +189,7 @@ class ToolCall:
             input_label=TaintLabel.from_dict(d.get("input_label") or {}),
             agent_id=d.get("agent_id"),
             call_id=d.get("call_id"),
+            input_provenance=Provenance.from_dict(d.get("input_provenance") or {}),
         )
 
 
@@ -110,6 +207,7 @@ class Decision:
     reason: str = ""
     output_label: TaintLabel = field(default_factory=TaintLabel)
     redacted_fields: tuple[str, ...] = ()
+    output_provenance: Provenance = field(default_factory=Provenance)
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -122,6 +220,9 @@ class Decision:
         # and the common allow/deny path keep their original shape.
         if self.redacted_fields:
             out["redacted_fields"] = list(self.redacted_fields)
+        # Serialized only when present so legacy/common records keep their shape.
+        if not self.output_provenance.is_empty():
+            out["output_provenance"] = self.output_provenance.to_dict()
         return out
 
     @classmethod
@@ -132,6 +233,7 @@ class Decision:
             reason=d.get("reason", ""),
             output_label=TaintLabel.from_dict(d.get("output_label") or {}),
             redacted_fields=tuple(d.get("redacted_fields", ())),
+            output_provenance=Provenance.from_dict(d.get("output_provenance") or {}),
         )
 
 
@@ -151,6 +253,8 @@ def from_json(s: str, cls: type) -> Any:
 
 __all__ = [
     "Decision",
+    "Provenance",
+    "ProvenanceEntry",
     "TaintLabel",
     "ToolCall",
     "Verdict",

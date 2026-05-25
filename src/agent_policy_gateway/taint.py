@@ -30,7 +30,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
-from agent_policy_gateway.core import TaintLabel
+from agent_policy_gateway.core import Provenance, ProvenanceEntry, TaintLabel
 
 
 def join(*labels: TaintLabel) -> TaintLabel:
@@ -121,11 +121,49 @@ def propagate(
     return TaintLabel(raised.sources - spec.declassifies.sources)
 
 
+def propagate_provenance(
+    input_provs: Iterable[Provenance],
+    spec: ToolTaintSpec | None = None,
+    *,
+    tool_name: str,
+    call_id: str | None = None,
+    output_label: TaintLabel,
+) -> Provenance:
+    """Compute the provenance chain for a tool call's output.
+
+    The side-channel companion to :func:`propagate`: where :func:`propagate`
+    computes *what* sources flow out, this computes *where each surviving
+    source came from*.
+
+    The rule mirrors the label rule:
+
+    1. Merge the provenance chains of all inputs (the taint carried in).
+    2. Stamp a fresh :class:`ProvenanceEntry` for every source the tool
+       ``adds`` — this call is the origin of those sources.
+    3. Restrict the merged chain to the sources that actually survive in
+       ``output_label`` — so a declassified source drops its provenance too.
+
+    ``output_label`` is passed in (rather than recomputed) so the caller can
+    reuse the label it already derived from :func:`propagate` and the two
+    stay consistent.
+    """
+    spec = spec or ToolTaintSpec()
+    merged = Provenance()
+    for prov in input_provs:
+        merged = merged.merge(prov)
+    for source in sorted(spec.adds.sources):
+        merged = merged.add(
+            ProvenanceEntry(source=source, tool_name=tool_name, call_id=call_id)
+        )
+    return merged.restrict_to(output_label.sources)
+
+
 __all__ = [
     "ToolTaintSpec",
     "flows_to",
     "join",
     "join_all",
     "propagate",
+    "propagate_provenance",
     "subsumes",
 ]
