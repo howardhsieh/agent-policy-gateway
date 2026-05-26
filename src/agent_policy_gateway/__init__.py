@@ -71,6 +71,10 @@ from agent_policy_gateway.policy import (
     load_policy_str,
 )
 from agent_policy_gateway.ratelimit import DEFAULT_WINDOW_SECONDS, RateLimiter
+from agent_policy_gateway.reload import (
+    WatchedPolicy,
+    watch_policy,
+)
 from agent_policy_gateway.taint import (
     ToolTaintSpec,
     flows_to,
@@ -119,6 +123,7 @@ __all__ = [
     "ToolCall",
     "ToolTaintSpec",
     "Verdict",
+    "WatchedPolicy",
     "__version__",
     "anthropic_tool_specs",
     "bench_main",
@@ -149,5 +154,6 @@ __all__ = [
     "wrap_anthropic_tools",
     "wrap_mcp_session",
     "wrap_mcp_session_async",
+    "watch_policy",
     "wrap_openai_tools",
 ]
