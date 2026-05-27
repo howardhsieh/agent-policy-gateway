@@ -47,6 +47,7 @@ from agent_policy_gateway.gateway import (
     PolicyDenied,
     PolicyReview,
 )
+from agent_policy_gateway.langchain_adapter import wrap_langchain_tools
 from agent_policy_gateway.mcp_adapter import wrap_mcp_session
 from agent_policy_gateway.mcp_async_adapter import wrap_mcp_session_async
 from agent_policy_gateway.openai_adapter import (
@@ -152,6 +153,7 @@ __all__ = [
     "subsumes",
     "to_json",
     "wrap_anthropic_tools",
+    "wrap_langchain_tools",
     "wrap_mcp_session",
     "wrap_mcp_session_async",
     "watch_policy",
