@@ -309,3 +309,38 @@ def test_python_m_build_produces_twine_clean_artifacts(tmp_path):
     stray_build = REPO_ROOT / "build"
     if stray_build.is_dir():
         shutil.rmtree(stray_build, ignore_errors=True)
+
+
+# --------------------------------------------------------------------------- #
+# R23: typed-API regression guard                                             #
+# --------------------------------------------------------------------------- #
+
+
+def test_test_job_runs_mypy():
+    """R23: the ``test`` job must invoke ``mypy`` over the package so the
+    ``py.typed`` annotations cannot silently rot."""
+    cfg = _load_workflow()
+    steps = cfg["jobs"]["test"].get("steps", [])
+    text = " \n ".join(_step_text(s) for s in steps if isinstance(s, dict))
+    assert "mypy" in text, "test job must run mypy"
+    assert "src/agent_policy_gateway" in text, (
+        "mypy step must target the ``src/agent_policy_gateway`` package"
+    )
+
+
+def test_pyproject_pins_mypy_baseline():
+    """R23: ``pyproject.toml`` must pin a ``[tool.mypy]`` baseline so the
+    typed-API guard is reproducible locally and in CI."""
+    try:
+        import tomllib  # py311+
+    except ModuleNotFoundError:  # pragma: no cover - py310 fallback
+        import tomli as tomllib  # type: ignore[no-redef]
+    pyproject = REPO_ROOT / "pyproject.toml"
+    with pyproject.open("rb") as fh:
+        cfg = tomllib.load(fh)
+    mypy_cfg = cfg.get("tool", {}).get("mypy")
+    assert isinstance(mypy_cfg, dict), "pyproject must declare a [tool.mypy] section"
+    assert "python_version" in mypy_cfg, "[tool.mypy] must pin ``python_version``"
+    assert mypy_cfg.get("warn_unused_ignores") is True, (
+        "[tool.mypy] must set ``warn_unused_ignores = true``"
+    )

@@ -52,6 +52,9 @@ jobs:
       - name: Run ruff
         run: python -m ruff check .
 
+      - name: Run mypy
+        run: python -m mypy src/agent_policy_gateway
+
       - name: Run pytest
         run: python -m pytest
 

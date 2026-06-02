@@ -114,3 +114,16 @@ Apache-2.0. See [`LICENSE`](./LICENSE).
 
 This project is built incrementally and in public. See [`ROADMAP.md`](./ROADMAP.md) for what's
 next, and [`docs/design.md`](./docs/design.md) for the architecture.
+
+### Local checks
+
+Before opening a PR, run the same gates CI does (no `make`/`tox` required):
+
+```bash
+pip install -e ".[dev]"
+ruff check .
+mypy src/agent_policy_gateway
+pytest
+```
+
+`mypy` enforces the typed-API guard over the `py.typed` package; its baseline lives in the `[tool.mypy]` section of `pyproject.toml`.
