@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from agent_policy_gateway import cli_main
-from agent_policy_gateway.cli import _parse_taint, main
+from agent_policy_gateway.cli import _concretize_glob, _parse_taint, main
 from agent_policy_gateway.core import TaintLabel
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -150,3 +150,203 @@ class TestDispatch:
     def test_unknown_group_errors(self) -> None:
         with pytest.raises(SystemExit):
             _run(["frobnicate"])
+
+
+# --- ``apg policy diff`` (R24) -------------------------------------------------
+
+OLD_POLICY_YAML = """\
+version: 1
+name: old-pol
+rules:
+  - id: deny-web-to-email
+    when:
+      tool: send_email
+      taint: { any_of: [web] }
+    effect: { action: deny, reason: "no exfiltration" }
+  - id: gate-publish
+    when:
+      tool: "publish_*"
+      identity: agent.research
+    effect: { action: review }
+"""
+
+
+def _write(tmp_path: Path, name: str, text: str) -> Path:
+    path = tmp_path / name
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+class TestConcretizeGlob:
+    def test_none_returns_default(self) -> None:
+        assert _concretize_glob(None, default="d") == "d"
+        assert _concretize_glob(None, default=None) is None
+
+    def test_literal_passes_through(self) -> None:
+        assert _concretize_glob("send_email", default=None) == "send_email"
+
+    def test_star_glob_is_concretized_and_matches(self) -> None:
+        import fnmatch
+
+        sample = _concretize_glob("send_*", default=None)
+        assert sample is not None
+        assert fnmatch.fnmatchcase(sample, "send_*")
+
+    def test_question_mark_glob(self) -> None:
+        import fnmatch
+
+        sample = _concretize_glob("tool_?", default=None)
+        assert sample is not None
+        assert fnmatch.fnmatchcase(sample, "tool_?")
+
+
+class TestDiff:
+    def test_identical_policies_no_decision_changes(self, tmp_path: Path) -> None:
+        old = _write(tmp_path, "old.yaml", OLD_POLICY_YAML)
+        new = _write(tmp_path, "new.yaml", OLD_POLICY_YAML)
+        rc, out, err = _run(["policy", "diff", str(old), str(new)])
+        assert rc == 0
+        assert "no decision changes" in out
+
+    def test_same_file_twice_no_decision_changes(self, tmp_path: Path) -> None:
+        old = _write(tmp_path, "old.yaml", OLD_POLICY_YAML)
+        rc, out, err = _run(["policy", "diff", str(old), str(old)])
+        assert rc == 0
+        assert "no decision changes" in out
+
+    def test_effect_flip_is_reported(self, tmp_path: Path) -> None:
+        flipped = OLD_POLICY_YAML.replace(
+            'effect: { action: deny, reason: "no exfiltration" }',
+            "effect: { action: allow }",
+        )
+        old = _write(tmp_path, "old.yaml", OLD_POLICY_YAML)
+        new = _write(tmp_path, "new.yaml", flipped)
+        rc, out, err = _run(["policy", "diff", str(old), str(new)])
+        assert rc == 0
+        assert "deny-web-to-email" in out
+        assert "deny" in out
+        assert "allow" in out
+        assert "old:" in out and "new:" in out
+
+    def test_added_rule_is_reported_as_no_match_to_match(self, tmp_path: Path) -> None:
+        added = OLD_POLICY_YAML + (
+            "  - id: deny-shell\n"
+            "    when:\n"
+            "      tool: run_shell\n"
+            "    effect: { action: deny }\n"
+        )
+        old = _write(tmp_path, "old.yaml", OLD_POLICY_YAML)
+        new = _write(tmp_path, "new.yaml", added)
+        rc, out, err = _run(["policy", "diff", str(old), str(new)])
+        assert rc == 0
+        assert "run_shell" in out
+        assert "no match" in out
+        assert "deny-shell -> deny" in out
+
+    def test_removed_rule_is_reported_as_match_to_no_match(self, tmp_path: Path) -> None:
+        added = OLD_POLICY_YAML + (
+            "  - id: deny-shell\n"
+            "    when:\n"
+            "      tool: run_shell\n"
+            "    effect: { action: deny }\n"
+        )
+        old = _write(tmp_path, "old.yaml", added)
+        new = _write(tmp_path, "new.yaml", OLD_POLICY_YAML)
+        rc, out, err = _run(["policy", "diff", str(old), str(new)])
+        assert rc == 0
+        assert "deny-shell -> deny" in out
+        assert "no match" in out
+
+    def test_header_names_both_policies(self, tmp_path: Path) -> None:
+        old = _write(tmp_path, "old.yaml", OLD_POLICY_YAML)
+        new = _write(
+            tmp_path, "new.yaml", OLD_POLICY_YAML.replace("name: old-pol", "name: new-pol")
+        )
+        rc, out, err = _run(["policy", "diff", str(old), str(new)])
+        assert rc == 0
+        assert "old-pol" in out
+        assert "new-pol" in out
+
+    def test_single_scenario_via_tool_flag(self, tmp_path: Path) -> None:
+        flipped = OLD_POLICY_YAML.replace(
+            'effect: { action: deny, reason: "no exfiltration" }',
+            "effect: { action: allow }",
+        )
+        old = _write(tmp_path, "old.yaml", OLD_POLICY_YAML)
+        new = _write(tmp_path, "new.yaml", flipped)
+        rc, out, err = _run(
+            [
+                "policy",
+                "diff",
+                str(old),
+                str(new),
+                "--tool",
+                "send_email",
+                "--taint",
+                "web",
+            ]
+        )
+        assert rc == 0
+        assert "1 scenario(s)" in out
+        assert "deny-web-to-email" in out
+
+    def test_single_scenario_can_report_no_changes(self, tmp_path: Path) -> None:
+        flipped = OLD_POLICY_YAML.replace(
+            'effect: { action: deny, reason: "no exfiltration" }',
+            "effect: { action: allow }",
+        )
+        old = _write(tmp_path, "old.yaml", OLD_POLICY_YAML)
+        new = _write(tmp_path, "new.yaml", flipped)
+        # An untainted call never hit the flipped rule in either policy.
+        rc, out, err = _run(
+            ["policy", "diff", str(old), str(new), "--tool", "kb_lookup"]
+        )
+        assert rc == 0
+        assert "no decision changes" in out
+
+    def test_identity_scenarios_come_from_selectors(self, tmp_path: Path) -> None:
+        # gate-publish flips review -> deny; the matrix scenario for it carries
+        # the selector's identity, so the change is visible without flags.
+        flipped = OLD_POLICY_YAML.replace(
+            "effect: { action: review }", "effect: { action: deny }"
+        )
+        old = _write(tmp_path, "old.yaml", OLD_POLICY_YAML)
+        new = _write(tmp_path, "new.yaml", flipped)
+        rc, out, err = _run(["policy", "diff", str(old), str(new)])
+        assert rc == 0
+        assert "agent.research" in out
+        assert "gate-publish -> review" in out
+        assert "gate-publish -> deny" in out
+
+    def test_missing_old_file_exits_2(self, tmp_path: Path) -> None:
+        new = _write(tmp_path, "new.yaml", OLD_POLICY_YAML)
+        rc, out, err = _run(["policy", "diff", str(tmp_path / "nope.yaml"), str(new)])
+        assert rc == 2
+        assert "old policy file not found" in err
+
+    def test_missing_new_file_exits_2(self, tmp_path: Path) -> None:
+        old = _write(tmp_path, "old.yaml", OLD_POLICY_YAML)
+        rc, out, err = _run(["policy", "diff", str(old), str(tmp_path / "nope.yaml")])
+        assert rc == 2
+        assert "new policy file not found" in err
+
+    def test_malformed_new_policy_exits_1(self, tmp_path: Path) -> None:
+        old = _write(tmp_path, "old.yaml", OLD_POLICY_YAML)
+        bad = _write(tmp_path, "bad.yaml", "version: 2\nname: x\nrules: []\n")
+        rc, out, err = _run(["policy", "diff", str(old), str(bad)])
+        assert rc == 1
+        assert "invalid new policy" in err
+
+    def test_malformed_old_policy_exits_1(self, tmp_path: Path) -> None:
+        new = _write(tmp_path, "new.yaml", OLD_POLICY_YAML)
+        bad = _write(tmp_path, "bad.yaml", "rules: [\n")
+        rc, out, err = _run(["policy", "diff", str(bad), str(new)])
+        assert rc == 1
+        assert "invalid old policy" in err
+
+    def test_default_policy_diffed_against_itself(self) -> None:
+        rc, out, err = _run(
+            ["policy", "diff", str(DEFAULT_POLICY), str(DEFAULT_POLICY)]
+        )
+        assert rc == 0
+        assert "no decision changes" in out

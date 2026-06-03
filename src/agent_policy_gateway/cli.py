@@ -23,6 +23,18 @@ Subcommands
     prints its id and effect. When no rule matches, prints the line noting that
     the gateway's default disposition applies.
 
+``apg policy diff <old> <new> [--tool NAME] [--identity ID] [--taint a,b] [--resource R]``
+    Compare two policy files by *decisions* rather than text (R24). A matrix of
+    synthetic tool calls is derived from both policies' rule selectors (each
+    selector is concretized into one scenario that satisfies it, plus a neutral
+    baseline), every scenario is evaluated against both policies with
+    :meth:`~agent_policy_gateway.policy.Policy.first_match`, and scenarios whose
+    ``(rule id, action)`` outcome changed are reported. Supplying any of
+    ``--tool/--identity/--taint/--resource`` replaces the matrix with that
+    single user-defined scenario, mirroring ``explain``. Exits ``0`` whether or
+    not changes were found (printing ``no decision changes`` when none were),
+    ``2`` when either file is missing, ``1`` when either policy is malformed.
+
 The module is otherwise pure: the only I/O is reading the policy file (delegated
 to :func:`load_policy`) and writing to stdout/stderr.
 """
@@ -146,6 +158,138 @@ def _cmd_explain(args: argparse.Namespace) -> int:
     return 0
 
 
+
+# --- ``apg policy diff`` (R24) -------------------------------------------------
+
+#: A synthetic scenario: (tool_name, identity, taint sources, resource).
+_Scenario = tuple[str, str | None, frozenset[str], str | None]
+
+#: Neutral probe values for unconstrained selector fields. Deliberately odd
+#: names so they do not accidentally satisfy unrelated rules' globs.
+_ANY_TOOL = "__any_tool__"
+
+
+def _concretize_glob(glob: str | None, *, default: str | None) -> str | None:
+    """Return a concrete sample value satisfying the fnmatch ``glob``.
+
+    ``None`` (an unconstrained selector field) yields ``default``. Wildcard
+    characters are substituted with a literal ``x``; if the substitution does
+    not actually satisfy the glob (exotic patterns), the glob text itself is
+    returned as a best effort.
+    """
+    if glob is None:
+        return default
+    candidate = glob.replace("*", "x").replace("?", "x")
+    if fnmatch.fnmatchcase(candidate, glob):
+        return candidate
+    return glob
+
+
+def _scenarios_from_policy(policy: Policy) -> list[_Scenario]:
+    """One synthetic scenario per rule, concretized from its selector."""
+    scenarios: list[_Scenario] = []
+    for rule in policy.rules:
+        sel = rule.when
+        tool = _concretize_glob(sel.tool, default=_ANY_TOOL)
+        assert tool is not None  # default is non-None for tools
+        sources: set[str] = set()
+        if sel.taint is not None:
+            sources.update(sel.taint.all_of)
+            if sel.taint.any_of and not (set(sel.taint.any_of) & sources):
+                pick = next(
+                    (s for s in sel.taint.any_of if s not in sel.taint.none_of),
+                    None,
+                )
+                if pick is not None:
+                    sources.add(pick)
+        resource = _concretize_glob(sel.resource, default=None)
+        scenarios.append((tool, sel.identity, frozenset(sources), resource))
+    return scenarios
+
+
+def _build_matrix(old: Policy, new: Policy) -> list[_Scenario]:
+    """Deduplicated scenario matrix: neutral baseline + both policies' rules."""
+    baseline: _Scenario = (_ANY_TOOL, None, frozenset(), None)
+    matrix: list[_Scenario] = []
+    seen: set[_Scenario] = set()
+    for sc in [baseline, *_scenarios_from_policy(old), *_scenarios_from_policy(new)]:
+        if sc not in seen:
+            seen.add(sc)
+            matrix.append(sc)
+    return matrix
+
+
+def _decide(policy: Policy, scenario: _Scenario) -> tuple[str, str] | None:
+    """First-match decision for ``scenario``: ``(rule_id, action)`` or ``None``."""
+    tool, identity, sources, resource = scenario
+    label = TaintLabel.of(*sorted(sources)) if sources else TaintLabel()
+    call = ToolCall(tool_name=tool, agent_id=identity, input_label=label)
+    rule = policy.first_match(call, resource=resource)
+    if rule is None:
+        return None
+    return (rule.id, rule.effect.action.value)
+
+
+def _format_decision(decision: tuple[str, str] | None) -> str:
+    if decision is None:
+        return "(no match - default disposition)"
+    rule_id, action = decision
+    return f"{rule_id} -> {action}"
+
+
+def _cmd_diff(args: argparse.Namespace) -> int:
+    policies: list[Policy] = []
+    for label, path in (("old", args.old), ("new", args.new)):
+        try:
+            policies.append(load_policy(path))
+        except FileNotFoundError:
+            print(f"apg: {label} policy file not found: {path}", file=sys.stderr)
+            return 2
+        except PolicyError as exc:
+            print(f"apg: invalid {label} policy: {exc}", file=sys.stderr)
+            return 1
+    old, new = policies
+
+    single = any(
+        v is not None for v in (args.tool, args.identity, args.taint, args.resource)
+    )
+    if single:
+        matrix: list[_Scenario] = [
+            (
+                args.tool if args.tool is not None else _ANY_TOOL,
+                args.identity,
+                frozenset(_parse_taint(args.taint).sources),
+                args.resource,
+            )
+        ]
+    else:
+        matrix = _build_matrix(old, new)
+
+    changes: list[tuple[_Scenario, tuple[str, str] | None, tuple[str, str] | None]] = []
+    for sc in matrix:
+        old_d = _decide(old, sc)
+        new_d = _decide(new, sc)
+        if old_d != new_d:
+            changes.append((sc, old_d, new_d))
+
+    print(
+        f"comparing policies: {old.name!r} ({len(old.rules)} rule(s)) -> "
+        f"{new.name!r} ({len(new.rules)} rule(s))"
+    )
+    if not changes:
+        print(f"no decision changes across {len(matrix)} scenario(s)")
+        return 0
+    print(f"{len(changes)} decision change(s) across {len(matrix)} scenario(s):")
+    for (tool, identity, sources, resource), old_d, new_d in changes:
+        print(
+            f"  - tool={tool!r} identity={identity!r} "
+            f"taint={sorted(sources)!r} resource={resource!r}"
+        )
+        print(f"      old: {_format_decision(old_d)}")
+        print(f"      new: {_format_decision(new_d)}")
+    return 0
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="apg",
@@ -205,6 +349,45 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Target resource of the call (matched against rule resource globs).",
     )
     explain_p.set_defaults(func=_cmd_explain)
+
+    diff_p = policy_sub.add_parser(
+        "diff",
+        help="Compare two policy files by the decisions they produce.",
+        description=(
+            "Evaluate a matrix of synthetic tool calls (derived from both "
+            "policies' rule selectors, or a single --tool/--identity/--taint/"
+            "--resource scenario) against both policies and report scenarios "
+            "whose first-match decision changed. Exits 0 either way, 2 if a "
+            "file is missing, 1 if a policy is malformed."
+        ),
+    )
+    diff_p.add_argument("old", help="Path to the old policy YAML file.")
+    diff_p.add_argument("new", help="Path to the new policy YAML file.")
+    diff_p.add_argument(
+        "--tool",
+        default=None,
+        metavar="NAME",
+        help="Restrict the diff to a single scenario with this tool name.",
+    )
+    diff_p.add_argument(
+        "--identity",
+        default=None,
+        metavar="ID",
+        help="Agent identity for the single-scenario diff.",
+    )
+    diff_p.add_argument(
+        "--taint",
+        default=None,
+        metavar="a,b,c",
+        help="Comma-separated taint sources for the single-scenario diff.",
+    )
+    diff_p.add_argument(
+        "--resource",
+        default=None,
+        metavar="R",
+        help="Target resource for the single-scenario diff.",
+    )
+    diff_p.set_defaults(func=_cmd_diff)
 
     return parser
 
