@@ -15,7 +15,7 @@ Subcommands
     :func:`~agent_policy_gateway.policy.load_policy_str` already constructs from
     ``yaml.YAMLError.problem_mark`` / Pydantic ``ValidationError``.
 
-``apg policy explain <file> --tool NAME [--identity ID] [--taint a,b] [--resource R]``
+``apg policy explain <file> --tool NAME [--identity ID] [--taint a,b] [--resource R] [--arg K=V]``
     Build a hypothetical :class:`~agent_policy_gateway.core.ToolCall` from the
     given selectors and walk the policy's rules in declaration order, printing a
     *first-match trace*: for each rule, whether it matched and (when it did not)
@@ -46,7 +46,13 @@ import fnmatch
 import sys
 
 from agent_policy_gateway.core import TaintLabel, ToolCall
-from agent_policy_gateway.policy import Policy, PolicyError, Selector, load_policy
+from agent_policy_gateway.policy import (
+    Policy,
+    PolicyError,
+    Selector,
+    _arg_value_equal,
+    load_policy,
+)
 
 
 def _parse_taint(raw: str | None) -> TaintLabel:
@@ -55,6 +61,33 @@ def _parse_taint(raw: str | None) -> TaintLabel:
         return TaintLabel()
     sources = [s.strip() for s in raw.split(",") if s.strip()]
     return TaintLabel.of(*sources)
+
+
+def _coerce_scalar(value: str) -> str | int | bool:
+    """Interpret a ``--arg`` value the way YAML would a plain scalar.
+
+    ``true`` / ``false`` (case-insensitive) become bools, decimal integers
+    become ints, everything else stays a string. Deliberately *not* YAML
+    parsing: ``yaml.safe_load("#public")`` would read a comment and return
+    ``None``, which is exactly the kind of value a channel argument needs.
+    """
+    low = value.lower()
+    if low == "true":
+        return True
+    if low == "false":
+        return False
+    try:
+        return int(value)
+    except ValueError:
+        return value
+
+
+def _arg_pair(raw: str) -> tuple[str, str | int | bool]:
+    """argparse type for ``--arg KEY=VALUE`` (repeatable on explain)."""
+    key, sep, value = raw.partition("=")
+    if not sep or not key.strip():
+        raise argparse.ArgumentTypeError(f"expected KEY=VALUE, got {raw!r}")
+    return key, _coerce_scalar(value)
 
 
 def _clause_rejection(
@@ -78,6 +111,12 @@ def _clause_rejection(
             return f"rule needs resource matching {selector.resource!r} but none was given"
         if not fnmatch.fnmatchcase(resource, selector.resource):
             return f"resource {resource!r} does not match glob {selector.resource!r}"
+    if selector.arg_equals:
+        for key, expected in selector.arg_equals.items():
+            if key not in call.args:
+                return f"argument {key!r} is missing (rule needs {key}={expected!r})"
+            if not _arg_value_equal(expected, call.args[key]):
+                return f"argument {key}={call.args[key]!r} != required {expected!r}"
     if selector.taint is not None and not selector.taint.matches(call.input_label):
         return (
             f"taint {sorted(call.input_label.sources)!r} fails condition "
@@ -94,10 +133,13 @@ def _explain(policy: Policy, call: ToolCall, *, resource: str | None) -> list[st
     lines.append(
         f"policy: {policy.name!r} ({len(policy.rules)} rule(s))"
     )
-    lines.append(
+    call_line = (
         f"call:   tool={call.tool_name!r} identity={call.agent_id!r} "
         f"taint={taint!r} resource={resource!r}"
     )
+    if call.args:
+        call_line += f" args={call.args!r}"
+    lines.append(call_line)
     lines.append("first-match trace:")
     matched_id: str | None = None
     for rule in policy.rules:
@@ -152,6 +194,7 @@ def _cmd_explain(args: argparse.Namespace) -> int:
         tool_name=args.tool,
         agent_id=args.identity,
         input_label=_parse_taint(args.taint),
+        args=dict(args.arg or []),
     )
     for line in _explain(policy, call, resource=args.resource):
         print(line)
@@ -347,6 +390,18 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="R",
         help="Target resource of the call (matched against rule resource globs).",
+    )
+    explain_p.add_argument(
+        "--arg",
+        action="append",
+        default=None,
+        type=_arg_pair,
+        metavar="KEY=VALUE",
+        help=(
+            "Argument on the hypothetical call, repeatable "
+            "(e.g. --arg channel=#public --arg dry_run=true). Values true/false "
+            "become bools, decimal integers become ints, all else stays a string."
+        ),
     )
     explain_p.set_defaults(func=_cmd_explain)
 

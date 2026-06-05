@@ -12,6 +12,8 @@ A *policy file* is a YAML document with a small, fixed schema::
           tool: send_email           # str or fnmatch glob, optional
           identity: agent.research   # str, optional (matches ToolCall.agent_id)
           resource: "https://*"      # str or fnmatch glob, optional
+          arg_equals:                # optional literal argument-value matching
+            channel: "#public"       # str / int / bool, compared by equality
           taint:                     # optional condition on input taint
             any_of: [web]            # at least one of these sources present
             all_of: []               # all of these sources present
@@ -47,6 +49,9 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    StrictBool,
+    StrictInt,
+    StrictStr,
     ValidationError,
     field_validator,
     model_validator,
@@ -100,6 +105,18 @@ class TaintCondition(BaseModel):
         return True
 
 
+def _arg_value_equal(expected: object, actual: object) -> bool:
+    """Equality for ``arg_equals`` with bool/int type strictness.
+
+    Python treats ``True == 1`` as true, but YAML's ``true`` and ``1`` are
+    distinct scalar types — a policy author who writes ``flag: true``
+    should not match a call passing ``flag=1`` (or vice versa).
+    """
+    if isinstance(expected, bool) != isinstance(actual, bool):
+        return False
+    return expected == actual
+
+
 class Selector(BaseModel):
     """Match conditions on a :class:`ToolCall`.
 
@@ -107,7 +124,12 @@ class Selector(BaseModel):
     the match. An empty selector (all fields ``None``) matches every
     call. ``tool`` and ``resource`` use :mod:`fnmatch`-style globbing
     so policies can match families of tools (e.g. ``send_*``) or URL
-    prefixes (e.g. ``https://*``).
+    prefixes (e.g. ``https://*``). ``arg_equals`` matches named call
+    arguments against literal scalar values (``str`` / ``int`` /
+    ``bool``): every listed argument must be present on the call and
+    equal to the given value. Comparison is type-strict between ``bool``
+    and ``int`` (``true`` does not match ``1``). An empty ``arg_equals``
+    mapping, like an absent one, does not constrain the match.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -115,7 +137,17 @@ class Selector(BaseModel):
     tool: str | None = None
     identity: str | None = None
     resource: str | None = None
+    arg_equals: dict[str, StrictStr | StrictInt | StrictBool] | None = None
     taint: TaintCondition | None = None
+
+    @field_validator("arg_equals")
+    @classmethod
+    def _arg_keys_nonempty(
+        cls, v: dict[str, StrictStr | StrictInt | StrictBool] | None
+    ) -> dict[str, StrictStr | StrictInt | StrictBool] | None:
+        if v is not None and any(not k.strip() for k in v):
+            raise ValueError("arg_equals keys must be non-empty argument names")
+        return v
 
     def matches(self, call: ToolCall, *, resource: str | None = None) -> bool:
         """Return True iff this selector matches ``call``.
@@ -134,6 +166,12 @@ class Selector(BaseModel):
         if self.resource is not None:
             if resource is None or not fnmatch.fnmatchcase(resource, self.resource):
                 return False
+        if self.arg_equals:
+            for key, expected in self.arg_equals.items():
+                if key not in call.args:
+                    return False
+                if not _arg_value_equal(expected, call.args[key]):
+                    return False
         if self.taint is not None and not self.taint.matches(call.input_label):
             return False
         return True

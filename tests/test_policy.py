@@ -151,6 +151,117 @@ class TestSelector:
 
 
 # ---------------------------------------------------------------------------
+# Selector.arg_equals (R25)
+# ---------------------------------------------------------------------------
+
+
+def _args_call(tool_name: str = "post_message", **args: object) -> ToolCall:
+    return ToolCall(tool_name=tool_name, args=dict(args))
+
+
+class TestArgEquals:
+    def test_literal_string_match(self) -> None:
+        s = Selector(arg_equals={"channel": "#public"})
+        assert s.matches(_args_call(channel="#public"))
+
+    def test_literal_value_mismatch(self) -> None:
+        s = Selector(arg_equals={"channel": "#public"})
+        assert not s.matches(_args_call(channel="#random"))
+
+    def test_missing_argument_does_not_match(self) -> None:
+        s = Selector(arg_equals={"channel": "#public"})
+        assert not s.matches(_args_call(body="hi"))
+        assert not s.matches(_args_call())
+
+    def test_int_and_bool_values(self) -> None:
+        s = Selector(arg_equals={"count": 3, "dry_run": True})
+        assert s.matches(_args_call(count=3, dry_run=True))
+        assert not s.matches(_args_call(count=4, dry_run=True))
+        assert not s.matches(_args_call(count=3, dry_run=False))
+
+    def test_bool_int_comparison_is_type_strict(self) -> None:
+        # Python says True == 1, but YAML true and 1 are distinct scalars.
+        assert not Selector(arg_equals={"flag": True}).matches(_args_call(flag=1))
+        assert not Selector(arg_equals={"n": 1}).matches(_args_call(n=True))
+        assert not Selector(arg_equals={"n": 0}).matches(_args_call(n=False))
+
+    def test_every_listed_argument_must_match(self) -> None:
+        s = Selector(arg_equals={"channel": "#public", "dry_run": False})
+        assert s.matches(_args_call(channel="#public", dry_run=False))
+        assert not s.matches(_args_call(channel="#public", dry_run=True))
+        assert not s.matches(_args_call(channel="#public"))
+
+    def test_extra_call_arguments_are_ignored(self) -> None:
+        s = Selector(arg_equals={"channel": "#public"})
+        assert s.matches(_args_call(channel="#public", body="hi", n=7))
+
+    def test_absent_and_empty_arg_equals_do_not_constrain(self) -> None:
+        assert Selector().matches(_args_call(channel="#x"))
+        assert Selector(arg_equals=None).matches(_args_call())
+        assert Selector(arg_equals={}).matches(_args_call())
+
+    def test_combines_with_other_clauses(self) -> None:
+        s = Selector(tool="post_*", arg_equals={"channel": "#public"})
+        assert s.matches(_args_call("post_message", channel="#public"))
+        assert not s.matches(_args_call("send_email", channel="#public"))
+        assert not s.matches(_args_call("post_message", channel="#priv"))
+
+    def test_rejects_non_scalar_values(self) -> None:
+        with pytest.raises(ValidationError):
+            Selector(arg_equals={"x": [1, 2]})  # type: ignore[dict-item]
+        with pytest.raises(ValidationError):
+            Selector(arg_equals={"x": {"y": 1}})  # type: ignore[dict-item]
+        with pytest.raises(ValidationError):
+            Selector(arg_equals={"x": 1.5})  # type: ignore[dict-item]
+        with pytest.raises(ValidationError):
+            Selector(arg_equals={"x": None})  # type: ignore[dict-item]
+
+    def test_rejects_blank_keys(self) -> None:
+        with pytest.raises(ValidationError):
+            Selector(arg_equals={"": "v"})
+        with pytest.raises(ValidationError):
+            Selector(arg_equals={"   ": "v"})
+
+    def test_loads_from_yaml(self) -> None:
+        pol = load_policy_str(
+            textwrap.dedent(
+                """\
+                version: 1
+                name: arg-demo
+                rules:
+                  - id: deny-public-channel
+                    when:
+                      tool: post_message
+                      arg_equals: {channel: "#public", count: 2, dry: false}
+                    effect: {action: deny}
+                """
+            )
+        )
+        sel = pol.rules[0].when
+        assert sel.arg_equals == {"channel": "#public", "count": 2, "dry": False}
+        assert pol.first_match(
+            _args_call(channel="#public", count=2, dry=False)
+        ) is pol.rules[0]
+        assert pol.first_match(_args_call(channel="#public", count=2, dry=True)) is None
+
+    def test_yaml_rejects_bad_value_types(self) -> None:
+        with pytest.raises(PolicyError, match="arg_equals"):
+            load_policy_str(
+                textwrap.dedent(
+                    """\
+                    version: 1
+                    name: bad
+                    rules:
+                      - id: r1
+                        when:
+                          arg_equals: {x: [1, 2]}
+                        effect: {action: deny}
+                    """
+                )
+            )
+
+
+# ---------------------------------------------------------------------------
 # Effect
 # ---------------------------------------------------------------------------
 

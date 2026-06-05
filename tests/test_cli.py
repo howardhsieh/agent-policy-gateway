@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from agent_policy_gateway import cli_main
-from agent_policy_gateway.cli import _concretize_glob, _parse_taint, main
+from agent_policy_gateway.cli import _coerce_scalar, _concretize_glob, _parse_taint, main
 from agent_policy_gateway.core import TaintLabel
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -140,6 +140,129 @@ class TestExplain:
         # argparse exits with SystemExit(2) when a required option is missing.
         with pytest.raises(SystemExit):
             _run(["policy", "explain", str(DEFAULT_POLICY)])
+
+
+ARG_POLICY = """\
+version: 1
+name: arg-demo
+rules:
+  - id: deny-public-channel
+    when:
+      tool: post_message
+      arg_equals: {channel: "#public"}
+    effect: {action: deny, reason: "no posting to public channels"}
+  - id: allow-rest
+    effect: {action: allow}
+"""
+
+
+class TestExplainArgEquals:
+    """R25: the explain trace honours ``arg_equals`` and ``--arg``."""
+
+    @pytest.fixture()
+    def policy_file(self, tmp_path: Path) -> Path:
+        f = tmp_path / "arg-demo.yaml"
+        f.write_text(ARG_POLICY, encoding="utf-8")
+        return f
+
+    def test_arg_match_hits_rule(self, policy_file: Path) -> None:
+        rc, out, err = _run(
+            [
+                "policy",
+                "explain",
+                str(policy_file),
+                "--tool",
+                "post_message",
+                "--arg",
+                "channel=#public",
+            ]
+        )
+        assert rc == 0
+        assert "matched rule: deny-public-channel" in out
+        assert "args={'channel': '#public'}" in out
+
+    def test_arg_mismatch_falls_through(self, policy_file: Path) -> None:
+        rc, out, err = _run(
+            [
+                "policy",
+                "explain",
+                str(policy_file),
+                "--tool",
+                "post_message",
+                "--arg",
+                "channel=#random",
+            ]
+        )
+        assert rc == 0
+        assert "argument channel='#random' != required '#public'" in out
+        assert "matched rule: allow-rest" in out
+
+    def test_missing_arg_is_spelled_out(self, policy_file: Path) -> None:
+        rc, out, err = _run(
+            ["policy", "explain", str(policy_file), "--tool", "post_message"]
+        )
+        assert rc == 0
+        assert "argument 'channel' is missing (rule needs channel='#public')" in out
+        assert "matched rule: allow-rest" in out
+
+    def test_no_args_keeps_legacy_call_line(self, policy_file: Path) -> None:
+        rc, out, err = _run(
+            ["policy", "explain", str(policy_file), "--tool", "post_message"]
+        )
+        assert rc == 0
+        assert "args=" not in out  # call line keeps its R18 shape without --arg
+
+    def test_repeatable_and_typed_args(self, tmp_path: Path) -> None:
+        f = tmp_path / "typed.yaml"
+        f.write_text(
+            """\
+version: 1
+name: typed
+rules:
+  - id: r1
+    when:
+      arg_equals: {count: 3, dry_run: true}
+    effect: {action: deny}
+""",
+            encoding="utf-8",
+        )
+        rc, out, err = _run(
+            [
+                "policy",
+                "explain",
+                str(f),
+                "--tool",
+                "anything",
+                "--arg",
+                "count=3",
+                "--arg",
+                "dry_run=true",
+            ]
+        )
+        assert rc == 0
+        assert "matched rule: r1" in out
+
+    def test_malformed_arg_exits_via_argparse(self, policy_file: Path) -> None:
+        with pytest.raises(SystemExit):
+            _run(
+                [
+                    "policy",
+                    "explain",
+                    str(policy_file),
+                    "--tool",
+                    "x",
+                    "--arg",
+                    "no-equals-sign",
+                ]
+            )
+
+    def test_coerce_scalar(self) -> None:
+        assert _coerce_scalar("true") is True
+        assert _coerce_scalar("FALSE") is False
+        assert _coerce_scalar("3") == 3 and isinstance(_coerce_scalar("3"), int)
+        assert _coerce_scalar("#public") == "#public"
+        assert _coerce_scalar("") == ""
+        assert _coerce_scalar("1.5") == "1.5"  # only decimal ints are coerced
 
 
 class TestDispatch:
