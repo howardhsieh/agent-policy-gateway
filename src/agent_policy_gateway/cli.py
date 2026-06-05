@@ -35,6 +35,17 @@ Subcommands
     not changes were found (printing ``no decision changes`` when none were),
     ``2`` when either file is missing, ``1`` when either policy is malformed.
 
+``apg policy lint <file>``
+    Static quality checks on a single policy file (R26). Reports rules that can
+    *never* match (a self-contradictory taint clause, e.g. a source required by
+    ``all_of`` but forbidden by ``none_of``) and rules that are *shadowed* by an
+    earlier rule whose selector is at least as general (first-match means the
+    later rule is dead). Shadowing detection is deliberately conservative:
+    findings are emitted only when generality is certain, so a clean policy may
+    still contain subtle dead rules, but every reported finding is real. Exits
+    ``0`` when no findings, ``3`` when findings were reported, ``2`` when the
+    file is missing, ``1`` when the policy is malformed.
+
 The module is otherwise pure: the only I/O is reading the policy file (delegated
 to :func:`load_policy`) and writing to stdout/stderr.
 """
@@ -50,6 +61,7 @@ from agent_policy_gateway.policy import (
     Policy,
     PolicyError,
     Selector,
+    TaintCondition,
     _arg_value_equal,
     load_policy,
 )
@@ -333,6 +345,160 @@ def _cmd_diff(args: argparse.Namespace) -> int:
     return 0
 
 
+# --- ``apg policy lint`` (R26) -------------------------------------------------
+
+#: Characters that make an fnmatch pattern non-literal.
+_GLOB_CHARS = frozenset("*?[")
+
+
+def _pattern_at_least_as_general(earlier: str | None, later: str | None) -> bool:
+    """Conservatively decide whether glob field ``earlier`` subsumes ``later``.
+
+    Returns True only when *every* value matched by ``later`` is certainly
+    matched by ``earlier``: an unset earlier field constrains nothing; equal
+    patterns subsume each other; and a *literal* later value (no glob
+    metacharacters) can be tested directly with :func:`fnmatch.fnmatchcase`.
+    Two distinct globs are never compared (glob-subsumption in general is not
+    worth the subtlety here) — the check stays conservative and never
+    produces a false positive.
+    """
+    if earlier is None:
+        return True
+    if later is None:
+        return False
+    if earlier == later:
+        return True
+    if not (_GLOB_CHARS & set(later)):
+        return fnmatch.fnmatchcase(later, earlier)
+    return False
+
+
+def _args_at_least_as_general(
+    earlier: dict[str, str | int | bool] | None,
+    later: dict[str, str | int | bool] | None,
+) -> bool:
+    """True iff ``earlier``'s ``arg_equals`` constraints subsume ``later``'s.
+
+    Fewer constraints are more general: every (key, value) pair the earlier
+    selector requires must also be required — with an equal value, type-strict
+    via :func:`_arg_value_equal` — by the later selector.
+    """
+    if not earlier:
+        return True
+    if not later:
+        return False
+    return all(
+        key in later and _arg_value_equal(value, later[key])
+        for key, value in earlier.items()
+    )
+
+
+def _taint_at_least_as_general(
+    earlier: TaintCondition | None, later: TaintCondition | None
+) -> bool:
+    """True iff every label satisfying ``later`` certainly satisfies ``earlier``.
+
+    Conservative sufficient conditions, mirroring ``TaintCondition.matches``:
+    ``earlier.all_of`` must be a subset of ``later.all_of`` (the later rule
+    already guarantees those sources are present); ``earlier.none_of`` must be
+    a subset of ``later.none_of`` (the later rule already guarantees their
+    absence); and a non-empty ``earlier.any_of`` must be guaranteed either by
+    a source the later rule requires via ``all_of`` or because every source
+    ``later.any_of`` can supply is accepted by ``earlier.any_of``.
+    """
+    if earlier is None or earlier.is_empty():
+        return True
+    if later is None or later.is_empty():
+        return False
+    if not set(earlier.all_of) <= set(later.all_of):
+        return False
+    if not set(earlier.none_of) <= set(later.none_of):
+        return False
+    if earlier.any_of:
+        guaranteed_by_all = bool(set(earlier.any_of) & set(later.all_of))
+        guaranteed_by_any = bool(later.any_of) and set(later.any_of) <= set(
+            earlier.any_of
+        )
+        if not (guaranteed_by_all or guaranteed_by_any):
+            return False
+    return True
+
+
+def _selector_at_least_as_general(earlier: Selector, later: Selector) -> bool:
+    """True iff ``earlier`` certainly matches every call ``later`` matches."""
+    return (
+        _pattern_at_least_as_general(earlier.tool, later.tool)
+        and (earlier.identity is None or earlier.identity == later.identity)
+        and _pattern_at_least_as_general(earlier.resource, later.resource)
+        and _args_at_least_as_general(earlier.arg_equals, later.arg_equals)
+        and _taint_at_least_as_general(earlier.taint, later.taint)
+    )
+
+
+def _taint_contradiction(cond: TaintCondition | None) -> str | None:
+    """Explain why ``cond`` is unsatisfiable, or None when it is satisfiable."""
+    if cond is None:
+        return None
+    clash = set(cond.all_of) & set(cond.none_of)
+    if clash:
+        source = sorted(clash)[0]
+        return (
+            f"taint clause requires source {source!r} in all_of "
+            "but also forbids it in none_of"
+        )
+    if cond.any_of and set(cond.any_of) <= set(cond.none_of):
+        return (
+            f"taint clause requires one of any_of {sorted(cond.any_of)!r} "
+            "but none_of forbids every one of them"
+        )
+    return None
+
+
+def _lint(policy: Policy) -> list[str]:
+    """Run the static checks and return the findings, in rule order."""
+    findings: list[str] = []
+    contradictory: set[str] = set()
+    for index, rule in enumerate(policy.rules):
+        why = _taint_contradiction(rule.when.taint)
+        if why is not None:
+            contradictory.add(rule.id)
+            findings.append(f"W002 rule {rule.id!r} can never match: {why}")
+            continue
+        for earlier in policy.rules[:index]:
+            if earlier.id in contradictory:
+                continue
+            if _selector_at_least_as_general(earlier.when, rule.when):
+                findings.append(
+                    f"W001 rule {rule.id!r} is shadowed by earlier rule "
+                    f"{earlier.id!r}: every call it matches is matched "
+                    f"first by {earlier.id!r}"
+                )
+                break
+    return findings
+
+
+def _cmd_lint(args: argparse.Namespace) -> int:
+    try:
+        policy = load_policy(args.file)
+    except FileNotFoundError:
+        print(f"apg: policy file not found: {args.file}", file=sys.stderr)
+        return 2
+    except PolicyError as exc:
+        print(f"apg: invalid policy: {exc}", file=sys.stderr)
+        return 1
+    findings = _lint(policy)
+    if not findings:
+        print(
+            f"OK: no lint findings in policy {policy.name!r} "
+            f"({len(policy.rules)} rule(s))"
+        )
+        return 0
+    for line in findings:
+        print(line)
+    print(f"{len(findings)} lint finding(s) in policy {policy.name!r}")
+    return 3
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="apg",
@@ -444,6 +610,20 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     diff_p.set_defaults(func=_cmd_diff)
 
+    lint_p = policy_sub.add_parser(
+        "lint",
+        help="Report dead rules: shadowed or self-contradictory selectors.",
+        description=(
+            "Run static quality checks on a policy file. Reports rules that "
+            "can never match (self-contradictory taint clause) and rules "
+            "shadowed by an earlier, at-least-as-general rule. Exits 0 when "
+            "clean, 3 when findings were reported, 2 if the file is missing, "
+            "1 if the policy is malformed."
+        ),
+    )
+    lint_p.add_argument("file", help="Path to the policy YAML file.")
+    lint_p.set_defaults(func=_cmd_lint)
+
     return parser
 
 
@@ -451,7 +631,7 @@ def main(argv: list[str] | None = None) -> int:
     """Entry point for the ``apg`` console script.
 
     Returns the subcommand's exit code: ``0`` success, ``1`` invalid policy,
-    ``2`` missing file.
+    ``2`` missing file, ``3`` lint findings (``policy lint`` only).
     """
     parser = _build_parser()
     args = parser.parse_args(argv)

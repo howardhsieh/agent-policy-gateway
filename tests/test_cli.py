@@ -14,8 +14,16 @@ from pathlib import Path
 import pytest
 
 from agent_policy_gateway import cli_main
-from agent_policy_gateway.cli import _coerce_scalar, _concretize_glob, _parse_taint, main
+from agent_policy_gateway.cli import (
+    _coerce_scalar,
+    _concretize_glob,
+    _parse_taint,
+    _pattern_at_least_as_general,
+    _taint_at_least_as_general,
+    main,
+)
 from agent_policy_gateway.core import TaintLabel
+from agent_policy_gateway.policy import TaintCondition
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_POLICY = REPO_ROOT / "policies" / "default.yaml"
@@ -473,3 +481,231 @@ class TestDiff:
         )
         assert rc == 0
         assert "no decision changes" in out
+
+
+# --- ``apg policy lint`` (R26) -------------------------------------------------
+
+CLEAN_LINT_YAML = """\
+version: 1
+name: clean-pol
+rules:
+  - id: deny-web-to-email
+    when:
+      tool: send_email
+      taint: { any_of: [web] }
+    effect: { action: deny }
+  - id: allow-research-publish
+    when:
+      tool: "publish_*"
+      identity: agent.research
+    effect: { action: allow }
+  - id: deny-publish-from-other-agents
+    when:
+      tool: "publish_*"
+    effect: { action: deny }
+"""
+
+
+class TestPatternGenerality:
+    def test_unset_earlier_is_most_general(self) -> None:
+        assert _pattern_at_least_as_general(None, "send_email")
+        assert _pattern_at_least_as_general(None, None)
+
+    def test_unset_later_is_not_subsumed_by_set_earlier(self) -> None:
+        assert not _pattern_at_least_as_general("send_email", None)
+
+    def test_equal_patterns_subsume(self) -> None:
+        assert _pattern_at_least_as_general("send_*", "send_*")
+
+    def test_glob_subsumes_literal(self) -> None:
+        assert _pattern_at_least_as_general("send_*", "send_email")
+        assert not _pattern_at_least_as_general("send_*", "kb_lookup")
+
+    def test_distinct_globs_conservatively_not_compared(self) -> None:
+        # ``send_*`` really does subsume ``send_e*`` but the conservative
+        # check refuses to reason about glob-vs-glob pairs.
+        assert not _pattern_at_least_as_general("send_*", "send_e*")
+
+
+class TestTaintGenerality:
+    def test_empty_earlier_is_most_general(self) -> None:
+        later = TaintCondition(any_of=("web",))
+        assert _taint_at_least_as_general(None, later)
+        assert _taint_at_least_as_general(TaintCondition(), later)
+
+    def test_constrained_earlier_does_not_subsume_empty_later(self) -> None:
+        assert not _taint_at_least_as_general(TaintCondition(any_of=("web",)), None)
+
+    def test_any_of_superset_subsumes(self) -> None:
+        earlier = TaintCondition(any_of=("web", "pii"))
+        later = TaintCondition(any_of=("web",))
+        assert _taint_at_least_as_general(earlier, later)
+        assert not _taint_at_least_as_general(later, earlier)
+
+    def test_any_of_guaranteed_by_later_all_of(self) -> None:
+        earlier = TaintCondition(any_of=("web",))
+        later = TaintCondition(all_of=("web", "pii"))
+        assert _taint_at_least_as_general(earlier, later)
+
+    def test_none_of_must_be_subset(self) -> None:
+        earlier = TaintCondition(none_of=("secret",))
+        later = TaintCondition(none_of=("secret", "pii"))
+        assert _taint_at_least_as_general(earlier, later)
+        assert not _taint_at_least_as_general(later, earlier)
+
+
+class TestLint:
+    def test_clean_policy_exits_0(self, tmp_path: Path) -> None:
+        f = _write(tmp_path, "clean.yaml", CLEAN_LINT_YAML)
+        rc, out, err = _run(["policy", "lint", str(f)])
+        assert rc == 0
+        assert "no lint findings" in out
+        assert "clean-pol" in out
+
+    def test_shipped_policies_are_lint_clean(self) -> None:
+        policies_dir = REPO_ROOT / "policies"
+        files = sorted(policies_dir.glob("*.yaml"))
+        assert files, "no shipped policies found"
+        for f in files:
+            rc, out, err = _run(["policy", "lint", str(f)])
+            assert rc == 0, f"{f.name}: {out}{err}"
+
+    def test_identical_selector_is_shadowed(self, tmp_path: Path) -> None:
+        yaml_text = CLEAN_LINT_YAML + (
+            "  - id: dead-duplicate\n"
+            "    when:\n"
+            "      tool: send_email\n"
+            "      taint: { any_of: [web] }\n"
+            "    effect: { action: allow }\n"
+        )
+        f = _write(tmp_path, "dup.yaml", yaml_text)
+        rc, out, err = _run(["policy", "lint", str(f)])
+        assert rc == 3
+        assert "W001" in out
+        assert "'dead-duplicate' is shadowed by earlier rule 'deny-web-to-email'" in out
+        assert "1 lint finding(s)" in out
+
+    def test_catch_all_shadows_everything_after_it(self, tmp_path: Path) -> None:
+        yaml_text = (
+            "version: 1\n"
+            "name: catch-all-pol\n"
+            "rules:\n"
+            "  - id: allow-everything\n"
+            "    effect: { action: allow }\n"
+            "  - id: never-reached\n"
+            "    when: { tool: send_email }\n"
+            "    effect: { action: deny }\n"
+        )
+        f = _write(tmp_path, "catchall.yaml", yaml_text)
+        rc, out, err = _run(["policy", "lint", str(f)])
+        assert rc == 3
+        assert "'never-reached' is shadowed by earlier rule 'allow-everything'" in out
+
+    def test_glob_shadows_literal_tool(self, tmp_path: Path) -> None:
+        yaml_text = (
+            "version: 1\n"
+            "name: glob-pol\n"
+            "rules:\n"
+            "  - id: deny-all-sends\n"
+            "    when: { tool: \"send_*\" }\n"
+            "    effect: { action: deny }\n"
+            "  - id: allow-send-email\n"
+            "    when: { tool: send_email }\n"
+            "    effect: { action: allow }\n"
+        )
+        f = _write(tmp_path, "glob.yaml", yaml_text)
+        rc, out, err = _run(["policy", "lint", str(f)])
+        assert rc == 3
+        assert "'allow-send-email' is shadowed by earlier rule 'deny-all-sends'" in out
+
+    def test_narrower_identity_earlier_does_not_shadow(self, tmp_path: Path) -> None:
+        # CLEAN_LINT_YAML's allow-research-publish (identity-constrained) must
+        # not be reported as shadowing deny-publish-from-other-agents.
+        f = _write(tmp_path, "clean.yaml", CLEAN_LINT_YAML)
+        rc, out, err = _run(["policy", "lint", str(f)])
+        assert rc == 0
+
+    def test_extra_arg_equals_later_is_shadowed(self, tmp_path: Path) -> None:
+        yaml_text = (
+            "version: 1\n"
+            "name: args-pol\n"
+            "rules:\n"
+            "  - id: deny-public-posts\n"
+            "    when: { tool: post_message }\n"
+            "    effect: { action: deny }\n"
+            "  - id: review-public-channel\n"
+            "    when:\n"
+            "      tool: post_message\n"
+            "      arg_equals: { channel: \"#public\" }\n"
+            "    effect: { action: review }\n"
+        )
+        f = _write(tmp_path, "args.yaml", yaml_text)
+        rc, out, err = _run(["policy", "lint", str(f)])
+        assert rc == 3
+        assert "'review-public-channel' is shadowed" in out
+
+    def test_all_of_none_of_contradiction_reported(self, tmp_path: Path) -> None:
+        yaml_text = (
+            "version: 1\n"
+            "name: contra-pol\n"
+            "rules:\n"
+            "  - id: impossible\n"
+            "    when:\n"
+            "      tool: send_email\n"
+            "      taint: { all_of: [web], none_of: [web] }\n"
+            "    effect: { action: deny }\n"
+        )
+        f = _write(tmp_path, "contra.yaml", yaml_text)
+        rc, out, err = _run(["policy", "lint", str(f)])
+        assert rc == 3
+        assert "W002" in out
+        assert "'impossible' can never match" in out
+        assert "all_of" in out and "none_of" in out
+
+    def test_any_of_swallowed_by_none_of_reported(self, tmp_path: Path) -> None:
+        yaml_text = (
+            "version: 1\n"
+            "name: contra2-pol\n"
+            "rules:\n"
+            "  - id: impossible-any\n"
+            "    when:\n"
+            "      taint: { any_of: [web, pii], none_of: [web, pii, secret] }\n"
+            "    effect: { action: deny }\n"
+        )
+        f = _write(tmp_path, "contra2.yaml", yaml_text)
+        rc, out, err = _run(["policy", "lint", str(f)])
+        assert rc == 3
+        assert "W002" in out
+        assert "'impossible-any' can never match" in out
+
+    def test_contradictory_rule_does_not_shadow(self, tmp_path: Path) -> None:
+        # The impossible catch-all-ish rule never matches anything, so the
+        # rule after it must NOT be reported as shadowed by it.
+        yaml_text = (
+            "version: 1\n"
+            "name: contra3-pol\n"
+            "rules:\n"
+            "  - id: impossible\n"
+            "    when:\n"
+            "      taint: { all_of: [web], none_of: [web] }\n"
+            "    effect: { action: deny }\n"
+            "  - id: live-rule\n"
+            "    when: { tool: send_email }\n"
+            "    effect: { action: allow }\n"
+        )
+        f = _write(tmp_path, "contra3.yaml", yaml_text)
+        rc, out, err = _run(["policy", "lint", str(f)])
+        assert rc == 3
+        assert "W002" in out
+        assert "shadowed" not in out
+
+    def test_missing_file_exits_2(self, tmp_path: Path) -> None:
+        rc, out, err = _run(["policy", "lint", str(tmp_path / "nope.yaml")])
+        assert rc == 2
+        assert "not found" in err
+
+    def test_malformed_policy_exits_1(self, tmp_path: Path) -> None:
+        bad = _write(tmp_path, "bad.yaml", "version: 2\nname: x\nrules: []\n")
+        rc, out, err = _run(["policy", "lint", str(bad)])
+        assert rc == 1
+        assert "invalid policy" in err
