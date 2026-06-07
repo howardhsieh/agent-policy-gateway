@@ -483,6 +483,142 @@ class TestDiff:
         assert "no decision changes" in out
 
 
+# --- ``apg policy diff`` arg_equals concretization (R28) ----------------------
+
+ARG_OLD_YAML = """\
+version: 1
+name: arg-old
+rules:
+  - id: gate-public
+    when:
+      tool: send_message
+      arg_equals: { channel: "#public" }
+    effect: { action: deny, reason: "no public posts" }
+"""
+
+# Differs from ARG_OLD_YAML *only* inside the arg_equals value.
+ARG_NEW_YAML = ARG_OLD_YAML.replace("#public", "#private").replace(
+    "arg-old", "arg-new"
+)
+
+
+class TestDiffArgEquals:
+    """R28: rules gated only by ``arg_equals`` are concretized in the matrix."""
+
+    def test_arg_equals_value_change_reported_in_default_matrix(
+        self, tmp_path: Path
+    ) -> None:
+        # The two policies differ only inside an arg_equals value; without
+        # concretization the synthetic scenarios would never carry the arg,
+        # so neither rule would match and the diff would be silent.
+        old = _write(tmp_path, "old.yaml", ARG_OLD_YAML)
+        new = _write(tmp_path, "new.yaml", ARG_NEW_YAML)
+        rc, out, err = _run(["policy", "diff", str(old), str(new)])
+        assert rc == 0
+        assert "no decision changes" not in out
+        # #public scenario: old denies, new no longer matches.
+        assert "args={'channel': '#public'}" in out
+        # #private scenario: new denies, old did not match.
+        assert "args={'channel': '#private'}" in out
+        assert "gate-public -> deny" in out
+
+    def test_rule_matches_its_own_synthetic_scenario(self, tmp_path: Path) -> None:
+        # Adding the same arg-gated rule should flip that scenario from
+        # "no match" to a concrete deny — proving the rule matches the
+        # scenario derived from its own selector.
+        empty = "version: 1\nname: empty\nrules: []\n"
+        old = _write(tmp_path, "old.yaml", empty)
+        new = _write(tmp_path, "new.yaml", ARG_OLD_YAML)
+        rc, out, err = _run(["policy", "diff", str(old), str(new)])
+        assert rc == 0
+        assert "args={'channel': '#public'}" in out
+        assert "new: gate-public -> deny" in out
+
+    def test_single_scenario_arg_matches_gated_rule(self, tmp_path: Path) -> None:
+        old = _write(tmp_path, "old.yaml", ARG_OLD_YAML)
+        new = _write(tmp_path, "new.yaml", ARG_NEW_YAML)
+        rc, out, err = _run(
+            [
+                "policy",
+                "diff",
+                str(old),
+                str(new),
+                "--tool",
+                "send_message",
+                "--arg",
+                "channel=#public",
+            ]
+        )
+        assert rc == 0
+        assert "1 decision change(s) across 1 scenario(s)" in out
+        assert "old: gate-public -> deny" in out
+        assert "new: (no match - default disposition)" in out
+
+    def test_arg_alone_switches_to_single_scenario_mode(
+        self, tmp_path: Path
+    ) -> None:
+        # --arg without --tool still forces single-scenario mode (one row).
+        old = _write(tmp_path, "old.yaml", ARG_OLD_YAML)
+        new = _write(tmp_path, "new.yaml", ARG_NEW_YAML)
+        rc, out, err = _run(
+            ["policy", "diff", str(old), str(new), "--arg", "channel=#private"]
+        )
+        assert rc == 0
+        # Single-scenario mode collapses the 3-row default matrix to one row;
+        # the synthetic call has no tool so the send_message rules do not fire.
+        assert "across 1 scenario(s)" in out
+        assert "no decision changes" in out
+
+    def test_single_scenario_non_matching_arg_reports_no_change(
+        self, tmp_path: Path
+    ) -> None:
+        old = _write(tmp_path, "old.yaml", ARG_OLD_YAML)
+        new = _write(tmp_path, "new.yaml", ARG_NEW_YAML)
+        rc, out, err = _run(
+            [
+                "policy",
+                "diff",
+                str(old),
+                str(new),
+                "--tool",
+                "send_message",
+                "--arg",
+                "channel=#random",
+            ]
+        )
+        assert rc == 0
+        assert "no decision changes" in out
+
+    def test_arg_value_is_type_coerced_like_explain(self, tmp_path: Path) -> None:
+        typed = (
+            "version: 1\nname: typed\n"
+            "rules:\n"
+            "  - id: gate-dry-run\n"
+            "    when:\n"
+            "      tool: deploy\n"
+            "      arg_equals: { dry_run: true }\n"
+            "    effect: { action: allow }\n"
+        )
+        empty = "version: 1\nname: empty\nrules: []\n"
+        old = _write(tmp_path, "old.yaml", empty)
+        new = _write(tmp_path, "new.yaml", typed)
+        # "true" must coerce to a bool so it equals the strict-bool selector.
+        rc, out, err = _run(
+            [
+                "policy",
+                "diff",
+                str(old),
+                str(new),
+                "--tool",
+                "deploy",
+                "--arg",
+                "dry_run=true",
+            ]
+        )
+        assert rc == 0
+        assert "new: gate-dry-run -> allow" in out
+
+
 # --- ``apg policy lint`` (R26) -------------------------------------------------
 
 CLEAN_LINT_YAML = """\

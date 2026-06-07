@@ -30,8 +30,9 @@ Subcommands
     baseline), every scenario is evaluated against both policies with
     :meth:`~agent_policy_gateway.policy.Policy.first_match`, and scenarios whose
     ``(rule id, action)`` outcome changed are reported. Supplying any of
-    ``--tool/--identity/--taint/--resource`` replaces the matrix with that
-    single user-defined scenario, mirroring ``explain``. Exits ``0`` whether or
+    ``--tool/--identity/--taint/--resource/--arg`` replaces the matrix with
+    that single user-defined scenario, mirroring ``explain`` (``--arg
+    KEY=VALUE`` is repeatable and type-coerced; R28). Exits ``0`` whether or
     not changes were found (printing ``no decision changes`` when none were),
     ``2`` when either file is missing, ``1`` when either policy is malformed.
 
@@ -216,8 +217,11 @@ def _cmd_explain(args: argparse.Namespace) -> int:
 
 # --- ``apg policy diff`` (R24) -------------------------------------------------
 
-#: A synthetic scenario: (tool_name, identity, taint sources, resource).
-_Scenario = tuple[str, str | None, frozenset[str], str | None]
+#: A synthetic scenario: (tool_name, identity, taint sources, resource, args).
+#: ``args`` is a sorted tuple of ``(key, value)`` pairs so the scenario stays
+#: hashable (and dedup-able) while carrying ``arg_equals`` concretizations.
+_ScenarioArgs = tuple[tuple[str, str | int | bool], ...]
+_Scenario = tuple[str, str | None, frozenset[str], str | None, _ScenarioArgs]
 
 #: Neutral probe values for unconstrained selector fields. Deliberately odd
 #: names so they do not accidentally satisfy unrelated rules' globs.
@@ -258,13 +262,18 @@ def _scenarios_from_policy(policy: Policy) -> list[_Scenario]:
                 if pick is not None:
                     sources.add(pick)
         resource = _concretize_glob(sel.resource, default=None)
-        scenarios.append((tool, sel.identity, frozenset(sources), resource))
+        args: _ScenarioArgs = (
+            tuple(sorted(sel.arg_equals.items(), key=lambda kv: kv[0]))
+            if sel.arg_equals
+            else ()
+        )
+        scenarios.append((tool, sel.identity, frozenset(sources), resource, args))
     return scenarios
 
 
 def _build_matrix(old: Policy, new: Policy) -> list[_Scenario]:
     """Deduplicated scenario matrix: neutral baseline + both policies' rules."""
-    baseline: _Scenario = (_ANY_TOOL, None, frozenset(), None)
+    baseline: _Scenario = (_ANY_TOOL, None, frozenset(), None, ())
     matrix: list[_Scenario] = []
     seen: set[_Scenario] = set()
     for sc in [baseline, *_scenarios_from_policy(old), *_scenarios_from_policy(new)]:
@@ -276,9 +285,11 @@ def _build_matrix(old: Policy, new: Policy) -> list[_Scenario]:
 
 def _decide(policy: Policy, scenario: _Scenario) -> tuple[str, str] | None:
     """First-match decision for ``scenario``: ``(rule_id, action)`` or ``None``."""
-    tool, identity, sources, resource = scenario
+    tool, identity, sources, resource, args = scenario
     label = TaintLabel.of(*sorted(sources)) if sources else TaintLabel()
-    call = ToolCall(tool_name=tool, agent_id=identity, input_label=label)
+    call = ToolCall(
+        tool_name=tool, agent_id=identity, input_label=label, args=dict(args)
+    )
     rule = policy.first_match(call, resource=resource)
     if rule is None:
         return None
@@ -306,15 +317,20 @@ def _cmd_diff(args: argparse.Namespace) -> int:
     old, new = policies
 
     single = any(
-        v is not None for v in (args.tool, args.identity, args.taint, args.resource)
+        v is not None
+        for v in (args.tool, args.identity, args.taint, args.resource, args.arg)
     )
     if single:
+        scenario_args: _ScenarioArgs = tuple(
+            sorted(dict(args.arg or []).items(), key=lambda kv: kv[0])
+        )
         matrix: list[_Scenario] = [
             (
                 args.tool if args.tool is not None else _ANY_TOOL,
                 args.identity,
                 frozenset(_parse_taint(args.taint).sources),
                 args.resource,
+                scenario_args,
             )
         ]
     else:
@@ -335,10 +351,11 @@ def _cmd_diff(args: argparse.Namespace) -> int:
         print(f"no decision changes across {len(matrix)} scenario(s)")
         return 0
     print(f"{len(changes)} decision change(s) across {len(matrix)} scenario(s):")
-    for (tool, identity, sources, resource), old_d, new_d in changes:
+    for (tool, identity, sources, resource, sc_args), old_d, new_d in changes:
         print(
             f"  - tool={tool!r} identity={identity!r} "
-            f"taint={sorted(sources)!r} resource={resource!r}"
+            f"taint={sorted(sources)!r} resource={resource!r} "
+            f"args={dict(sc_args)!r}"
         )
         print(f"      old: {_format_decision(old_d)}")
         print(f"      new: {_format_decision(new_d)}")
@@ -607,6 +624,19 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="R",
         help="Target resource for the single-scenario diff.",
+    )
+    diff_p.add_argument(
+        "--arg",
+        action="append",
+        default=None,
+        type=_arg_pair,
+        metavar="KEY=VALUE",
+        help=(
+            "Argument on the single-scenario call, repeatable (e.g. "
+            "--arg channel=#public). Same coercion as 'policy explain': "
+            "true/false become bools, decimal integers become ints, all "
+            "else stays a string. Switches diff into single-scenario mode."
+        ),
     )
     diff_p.set_defaults(func=_cmd_diff)
 
