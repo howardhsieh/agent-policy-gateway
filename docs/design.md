@@ -397,3 +397,34 @@ dedicated redactor tool to exist.
   match them. With no pattern the whole field value is replaced by
   `mask`. The pattern is compiled at policy-load time so a bad regex is
   a load error, not a runtime surprise on the first matching call.
+
+- **Hash-chained audit log is opt-in, not on by default (R27).** The
+  tamper-evidence chain (`prev` = SHA-256 of the previous serialized
+  line) is gated behind `JsonlAuditWriter(chain=True)` rather than
+  enabled for every writer. The alternative — on-by-default with
+  legacy tolerance — would change the default on-disk record shape and
+  force every existing audit test and every already-written log into a
+  migration. Opt-in keeps the legacy record byte-identical (the `prev`
+  field is serialized only when set, mirroring the `redacted_fields` /
+  provenance precedent) so `read_audit` still parses old logs and the
+  R5 test suite stays green untouched; a deployer who wants
+  tamper-evidence asks for it explicitly, exactly as they already opt
+  into `fsync=True` for durability. The genesis sentinel is a fixed
+  64-char all-zero string — same width as a real digest, but never a
+  value `sha256` can produce, so "first record" is unambiguous. The
+  running digest is seeded from the log's last line on open, so a chain
+  survives writer restarts (append-only is the whole point) instead of
+  silently forking at every reopen.
+
+- **`--verify` is a chain walk, not a record parse (R27).** Tail
+  truncation that lops whole records off the end leaves a *valid* prefix
+  chain, so hash-chaining alone cannot prove a log is complete — that
+  needs a signed checkpoint or a length oracle, out of scope here. What
+  the chain *does* catch is any edit, reorder, deletion, or mid-line
+  truncation, because each of those changes a line's bytes and breaks the
+  next record's `prev`. `verify_chain` therefore reports the first line
+  whose `prev` disagrees with the running digest (or whose JSON is
+  unparseable, which a mid-line truncation produces), and `apg-replay
+  --verify` surfaces that line number with a distinct exit code (4) so a
+  caller can tell "chain broken" apart from "file missing" (2) without
+  scraping stderr.

@@ -17,8 +17,10 @@ from pathlib import Path
 import pytest
 
 from agent_policy_gateway import (
+    GENESIS_PREV,
     AuditFormatError,
     AuditRecord,
+    ChainVerifyResult,
     Decision,
     Gateway,
     JsonlAuditWriter,
@@ -31,6 +33,7 @@ from agent_policy_gateway import (
     load_policy_str,
     read_audit,
     replay_main,
+    verify_chain,
 )
 
 # --- helpers ---------------------------------------------------------------
@@ -484,3 +487,156 @@ def test_writer_round_trips_full_exfiltration_scenario(
     assert "DENY" in captured.out
     assert "web_search" in captured.out
     assert "send_email" in captured.out
+
+
+# --- hash-chained audit log (R27) -------------------------------------------
+
+
+def _chained_log(tmp_path: Path, n: int = 3) -> Path:
+    """Write ``n`` chained records and return the log path."""
+    log = tmp_path / "chained.jsonl"
+    clock = _ts_clock([f"2026-06-07T00:00:0{i}.000000Z" for i in range(n + 2)])
+    with JsonlAuditWriter(log, chain=True, clock=clock) as w:
+        for i in range(n):
+            w(_make_call(call_id=f"c{i}"), _make_decision())
+    return log
+
+
+def test_chain_disabled_by_default_has_no_prev_field(tmp_path: Path) -> None:
+    log = tmp_path / "audit.jsonl"
+    with JsonlAuditWriter(log) as w:
+        w(_make_call(), _make_decision())
+    record = json.loads(log.read_text(encoding="utf-8"))
+    assert "prev" not in record
+
+
+def test_chain_writes_prev_field_and_genesis_sentinel(tmp_path: Path) -> None:
+    log = _chained_log(tmp_path, n=3)
+    lines = log.read_text(encoding="utf-8").splitlines()
+    first = json.loads(lines[0])
+    assert first["prev"] == GENESIS_PREV
+    # Each later record's prev is the sha256 of the previous serialized line.
+    import hashlib
+
+    for i in range(1, len(lines)):
+        expected = hashlib.sha256(lines[i - 1].encode("utf-8")).hexdigest()
+        assert json.loads(lines[i])["prev"] == expected
+
+
+def test_chained_records_round_trip_through_read_audit(tmp_path: Path) -> None:
+    log = _chained_log(tmp_path, n=3)
+    records = list(read_audit(log))
+    assert len(records) == 3
+    assert records[0].prev == GENESIS_PREV
+    assert all(r.prev is not None for r in records)
+    # to_dict/from_dict preserves prev.
+    assert AuditRecord.from_dict(records[1].to_dict()).prev == records[1].prev
+
+
+def test_chain_continues_across_reopens(tmp_path: Path) -> None:
+    log = tmp_path / "chained.jsonl"
+    with JsonlAuditWriter(log, chain=True, clock=lambda: "T1") as w:
+        w(_make_call(call_id="a"), _make_decision())
+    with JsonlAuditWriter(log, chain=True, clock=lambda: "T2") as w:
+        w(_make_call(call_id="b"), _make_decision())
+    result = verify_chain(log)
+    assert result.ok is True
+    assert result.records == 2
+
+
+def test_verify_chain_accepts_intact_log(tmp_path: Path) -> None:
+    log = _chained_log(tmp_path, n=4)
+    result = verify_chain(log)
+    assert isinstance(result, ChainVerifyResult)
+    assert result.ok is True
+    assert result.records == 4
+    assert result.broken_line is None
+
+
+def test_verify_chain_detects_in_place_edit(tmp_path: Path) -> None:
+    log = _chained_log(tmp_path, n=3)
+    lines = log.read_text(encoding="utf-8").splitlines()
+    tampered = json.loads(lines[1])
+    tampered["decision"]["verdict"] = "deny"  # silently flip allow -> deny
+    lines[1] = json.dumps(tampered, ensure_ascii=False, sort_keys=True)
+    log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    result = verify_chain(log)
+    assert result.ok is False
+    # Editing line 2 breaks line 3's prev link.
+    assert result.broken_line == 3
+
+
+def test_verify_chain_detects_deleted_record(tmp_path: Path) -> None:
+    log = _chained_log(tmp_path, n=3)
+    lines = log.read_text(encoding="utf-8").splitlines()
+    del lines[1]  # drop the middle record
+    log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    result = verify_chain(log)
+    assert result.ok is False
+    assert result.broken_line == 2
+
+
+def test_verify_chain_detects_mid_line_truncation(tmp_path: Path) -> None:
+    log = _chained_log(tmp_path, n=3)
+    text = log.read_text(encoding="utf-8")
+    # Chop the file partway through the last line.
+    log.write_text(text[: len(text) - 30], encoding="utf-8")
+    result = verify_chain(log)
+    assert result.ok is False
+    assert result.broken_line == 3
+
+
+def test_verify_chain_flags_unchained_log(tmp_path: Path) -> None:
+    log = tmp_path / "audit.jsonl"
+    with JsonlAuditWriter(log) as w:  # chain=False -> no prev field
+        w(_make_call(), _make_decision())
+    result = verify_chain(log)
+    assert result.ok is False
+    assert result.broken_line == 1
+    assert "prev" in (result.reason or "")
+
+
+def test_replay_verify_exits_0_on_intact_chain(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    log = _chained_log(tmp_path, n=3)
+    rc = replay_main([str(log), "--verify"])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "chain intact" in captured.out
+
+
+def test_replay_verify_exits_4_on_tampered_chain(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    log = _chained_log(tmp_path, n=3)
+    lines = log.read_text(encoding="utf-8").splitlines()
+    tampered = json.loads(lines[1])
+    tampered["ts"] = "1999-01-01T00:00:00.000000Z"
+    lines[1] = json.dumps(tampered, ensure_ascii=False, sort_keys=True)
+    log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    rc = replay_main([str(log), "--verify"])
+    captured = capsys.readouterr()
+    assert rc == 4
+    assert "chain broken at line 3" in captured.err
+
+
+def test_replay_verify_exits_2_on_missing_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rc = replay_main([str(tmp_path / "nope.jsonl"), "--verify"])
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "log not found" in captured.err
+
+
+def test_unchained_log_still_replays_normally(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    log = tmp_path / "audit.jsonl"
+    _populate(log, n_allow=1, n_deny=1)
+    rc = replay_main([str(log)])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "ALLOW" in captured.out
+    assert "DENY" in captured.out

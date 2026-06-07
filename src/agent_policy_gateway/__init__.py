@@ -9,12 +9,15 @@ from agent_policy_gateway.anthropic_adapter import (
     wrap_anthropic_tools,
 )
 from agent_policy_gateway.audit import (
+    GENESIS_PREV,
     AuditFormatError,
     AuditRecord,
+    ChainVerifyResult,
     JsonlAuditWriter,
     format_record,
     read_audit,
     replay_main,
+    verify_chain,
 )
 from agent_policy_gateway.bench import (
     BenchResult,
@@ -95,6 +98,8 @@ __all__ = [
     "AnthropicToolUseError",
     "AuditFormatError",
     "AuditRecord",
+    "ChainVerifyResult",
+    "GENESIS_PREV",
     "AuditWriter",
     "BenchResult",
     "CALL_ID_KWARG",
@@ -148,6 +153,7 @@ __all__ = [
     "propagate_provenance",
     "read_audit",
     "replay_main",
+    "verify_chain",
     "results_to_json",
     "run_default_suite",
     "subsumes",
