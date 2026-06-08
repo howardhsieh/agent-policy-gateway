@@ -39,7 +39,8 @@ import hashlib
 import json
 import os
 import sys
-from collections.abc import Callable, Iterator
+from collections import Counter
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import IO, Any
@@ -55,6 +56,7 @@ __all__ = [
     "format_record",
     "read_audit",
     "replay_main",
+    "summarize_audit",
     "verify_chain",
 ]
 
@@ -361,6 +363,84 @@ def verify_chain(path: str | os.PathLike[str]) -> ChainVerifyResult:
             records += 1
             expected = _line_digest(line)
     return ChainVerifyResult(ok=True, records=records)
+
+
+# --- audit stats summary (R29) ------------------------------------------------
+
+
+def _pct(count: int, total: int) -> str:
+    """Format ``count/total`` as a one-decimal percentage string (no ``%``)."""
+    if total <= 0:
+        return "0.0"
+    return f"{100.0 * count / total:.1f}"
+
+
+def _top(counter: Counter[str], n: int) -> list[tuple[str, int]]:
+    """Most-frequent ``(name, count)`` pairs, ties broken by name ascending."""
+    return sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))[:n]
+
+
+#: Label used for decisions that carried no ``rule_id`` (the gateway's default
+#: disposition rather than a named rule).
+_NO_RULE = "(default - no rule)"
+
+
+def summarize_audit(
+    records: Iterable[AuditRecord],
+    *,
+    source: str | None = None,
+    top_n: int = 5,
+) -> list[str]:
+    """Render a one-screen plain-text summary of an audit log as lines.
+
+    The layout is deliberately stable (and test-covered): a header, the total
+    record count, the first/last timestamp span, a fixed three-line verdict
+    breakdown (always ``allow``/``deny``/``review`` in that order, even when a
+    verdict has zero hits), the combined deny+review share, and the top
+    ``top_n`` rules and tools by hit count. An empty log produces the header,
+    a zero count, and a single explanatory line.
+
+    Logic only: this function performs no I/O, mirroring ``cli._explain`` /
+    ``cli._lint`` so callers (the ``apg audit stats`` subcommand and tests)
+    can drive it directly.
+    """
+    recs = list(records)
+    total = len(recs)
+    lines: list[str] = []
+    header = "audit log summary"
+    if source is not None:
+        header += f": {source}"
+    lines.append(header)
+    lines.append(f"records:     {total}")
+    if total == 0:
+        lines.append("(log is empty - no records to summarize)")
+        return lines
+
+    timestamps = [r.ts for r in recs]
+    lines.append(f"span:        {min(timestamps)}  ..  {max(timestamps)}")
+
+    verdict_counts: Counter[Verdict] = Counter(r.decision.verdict for r in recs)
+    lines.append("verdicts:")
+    for verdict in Verdict:
+        count = verdict_counts.get(verdict, 0)
+        lines.append(f"  {verdict.value:<7s}{count:>5d}  ({_pct(count, total)}%)")
+    flagged = verdict_counts.get(Verdict.DENY, 0) + verdict_counts.get(
+        Verdict.REVIEW, 0
+    )
+    lines.append(f"deny+review: {flagged}/{total}  ({_pct(flagged, total)}%)")
+
+    rule_counts: Counter[str] = Counter(
+        r.decision.rule_id if r.decision.rule_id else _NO_RULE for r in recs
+    )
+    lines.append(f"top rules (by hits, max {top_n}):")
+    for name, count in _top(rule_counts, top_n):
+        lines.append(f"  {count:>5d}  {name}")
+
+    tool_counts: Counter[str] = Counter(r.call.tool_name for r in recs)
+    lines.append(f"top tools (by hits, max {top_n}):")
+    for name, count in _top(tool_counts, top_n):
+        lines.append(f"  {count:>5d}  {name}")
+    return lines
 
 
 # --- replay CLI ---------------------------------------------------------------

@@ -57,6 +57,11 @@ import argparse
 import fnmatch
 import sys
 
+from agent_policy_gateway.audit import (
+    AuditFormatError,
+    read_audit,
+    summarize_audit,
+)
 from agent_policy_gateway.core import TaintLabel, ToolCall
 from agent_policy_gateway.policy import (
     Policy,
@@ -516,6 +521,25 @@ def _cmd_lint(args: argparse.Namespace) -> int:
     return 3
 
 
+# --- ``apg audit stats`` (R29) -------------------------------------------------
+
+
+def _cmd_audit_stats(args: argparse.Namespace) -> int:
+    """Summarize a JSONL audit log. Exit codes mirror ``apg-replay``:
+    ``0`` ok, ``2`` missing file, ``3`` malformed log line."""
+    try:
+        records = list(read_audit(args.log))
+    except FileNotFoundError:
+        print(f"apg: audit log not found: {args.log}", file=sys.stderr)
+        return 2
+    except AuditFormatError as exc:
+        print(f"apg: {exc}", file=sys.stderr)
+        return 3
+    for line in summarize_audit(records, source=args.log, top_n=args.top):
+        print(line)
+    return 0
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="apg",
@@ -654,6 +678,33 @@ def _build_parser() -> argparse.ArgumentParser:
     lint_p.add_argument("file", help="Path to the policy YAML file.")
     lint_p.set_defaults(func=_cmd_lint)
 
+    audit_p = sub.add_parser(
+        "audit",
+        help="Inspect audit logs.",
+        description="Summarize or otherwise inspect JSONL audit logs.",
+    )
+    audit_sub = audit_p.add_subparsers(dest="command", required=True)
+
+    stats_p = audit_sub.add_parser(
+        "stats",
+        help="Print a one-screen summary of a JSONL audit log.",
+        description=(
+            "Summarize a JSONL audit log: total record count, first/last "
+            "timestamp, counts by verdict, the deny+review share, and the top "
+            "rules and tools by hit count. Exits 0 on success, 2 if the file "
+            "is missing, 3 if a log line is malformed."
+        ),
+    )
+    stats_p.add_argument("log", help="Path to the JSONL audit log file.")
+    stats_p.add_argument(
+        "--top",
+        type=int,
+        default=5,
+        metavar="N",
+        help="Show the top N rules and tools by hit count (default 5).",
+    )
+    stats_p.set_defaults(func=_cmd_audit_stats)
+
     return parser
 
 
@@ -661,7 +712,8 @@ def main(argv: list[str] | None = None) -> int:
     """Entry point for the ``apg`` console script.
 
     Returns the subcommand's exit code: ``0`` success, ``1`` invalid policy,
-    ``2`` missing file, ``3`` lint findings (``policy lint`` only).
+    ``2`` missing file, ``3`` lint findings (``policy lint``) or a
+    malformed audit log line (``audit stats``).
     """
     parser = _build_parser()
     args = parser.parse_args(argv)

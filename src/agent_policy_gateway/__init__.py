@@ -17,6 +17,7 @@ from agent_policy_gateway.audit import (
     format_record,
     read_audit,
     replay_main,
+    summarize_audit,
     verify_chain,
 )
 from agent_policy_gateway.bench import (
@@ -153,6 +154,7 @@ __all__ = [
     "propagate_provenance",
     "read_audit",
     "replay_main",
+    "summarize_audit",
     "verify_chain",
     "results_to_json",
     "run_default_suite",
