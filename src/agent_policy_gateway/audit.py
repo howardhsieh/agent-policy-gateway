@@ -53,6 +53,7 @@ __all__ = [
     "AuditRecord",
     "ChainVerifyResult",
     "JsonlAuditWriter",
+    "audit_stats_dict",
     "format_record",
     "read_audit",
     "replay_main",
@@ -441,6 +442,65 @@ def summarize_audit(
     for name, count in _top(tool_counts, top_n):
         lines.append(f"  {count:>5d}  {name}")
     return lines
+
+
+def audit_stats_dict(
+    records: Iterable[AuditRecord],
+    *,
+    source: str | None = None,
+    top_n: int = 5,
+) -> dict[str, Any]:
+    """Return the audit-log statistics as a JSON-serializable dict.
+
+    This is the structured counterpart to :func:`summarize_audit`: it computes
+    the same figures (record count, timestamp span, per-verdict counts and
+    percentages for all four verdicts in enum order, the combined deny+review
+    share, and the top ``top_n`` rules and tools by hit count) but returns them
+    as a dict instead of rendering plain-text lines. Percentages are floats
+    rounded to one decimal place, matching the text summary.
+
+    Like :func:`summarize_audit`, this performs no I/O so callers (the
+    ``apg audit stats --json`` subcommand and tests) can drive it directly. An
+    empty log yields just ``{"source": ..., "records": 0}`` (``source`` omitted
+    when ``None``), paralleling the text summary's empty-log shortcut.
+    """
+    recs = list(records)
+    total = len(recs)
+    result: dict[str, Any] = {}
+    if source is not None:
+        result["source"] = source
+    result["records"] = total
+    if total == 0:
+        return result
+
+    timestamps = [r.ts for r in recs]
+    result["span"] = {"first": min(timestamps), "last": max(timestamps)}
+
+    verdict_counts: Counter[Verdict] = Counter(r.decision.verdict for r in recs)
+    result["verdicts"] = {
+        verdict.value: {
+            "count": verdict_counts.get(verdict, 0),
+            "pct": float(_pct(verdict_counts.get(verdict, 0), total)),
+        }
+        for verdict in Verdict
+    }
+    flagged = verdict_counts.get(Verdict.DENY, 0) + verdict_counts.get(
+        Verdict.REVIEW, 0
+    )
+    result["deny_review"] = {"count": flagged, "pct": float(_pct(flagged, total))}
+
+    rule_counts: Counter[str] = Counter(
+        r.decision.rule_id if r.decision.rule_id else _NO_RULE for r in recs
+    )
+    result["top_rules"] = [
+        {"name": name, "count": count} for name, count in _top(rule_counts, top_n)
+    ]
+
+    tool_counts: Counter[str] = Counter(r.call.tool_name for r in recs)
+    result["top_tools"] = [
+        {"name": name, "count": count} for name, count in _top(tool_counts, top_n)
+    ]
+    return result
 
 
 # --- replay CLI ---------------------------------------------------------------

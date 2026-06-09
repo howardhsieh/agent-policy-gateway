@@ -8,13 +8,14 @@ so no subprocess is needed, matching ``test_cli.py``.
 from __future__ import annotations
 
 import io
+import json
 from collections.abc import Callable, Iterator
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 import pytest
 
-from agent_policy_gateway import summarize_audit
+from agent_policy_gateway import audit_stats_dict, summarize_audit
 from agent_policy_gateway.audit import (
     AuditRecord,
     JsonlAuditWriter,
@@ -211,6 +212,131 @@ class TestIndirectInjectionExampleLog:
         assert "deny-web-to-email" in out
         assert "send_email" in out
         assert f"records:     {len(result.audit)}" in out
+
+
+# --- audit_stats_dict (pure) + --json CLI path (R30) --------------------------
+
+
+def _mixed_records() -> list[AuditRecord]:
+    rows = [
+        ("send_email", Verdict.DENY, "deny-web-to-email"),
+        ("send_email", Verdict.DENY, "deny-web-to-email"),
+        ("web_fetch", Verdict.ALLOW, None),
+        ("kb_lookup", Verdict.ALLOW, "allow-internal-readers"),
+        ("send_email", Verdict.REVIEW, "review-pii-egress"),
+    ]
+    clock = _clock()
+    return [
+        AuditRecord(
+            ts=clock(),
+            call=ToolCall(tool_name=tool, agent_id="a"),
+            decision=Decision(verdict=verdict, rule_id=rule),
+        )
+        for tool, verdict, rule in rows
+    ]
+
+
+class TestAuditStatsDict:
+    def test_empty_log_yields_source_and_zero_records_only(self) -> None:
+        d = audit_stats_dict([], source="x.jsonl")
+        assert d == {"source": "x.jsonl", "records": 0}
+
+    def test_source_omitted_when_absent(self) -> None:
+        d = audit_stats_dict([])
+        assert d == {"records": 0}
+        assert "source" not in d
+
+    def test_counts_and_percentages(self) -> None:
+        d = audit_stats_dict(_mixed_records(), source="log.jsonl", top_n=5)
+        assert d["source"] == "log.jsonl"
+        assert d["records"] == 5
+        # all four verdicts present, in enum order, even at zero hits
+        assert list(d["verdicts"]) == ["allow", "deny", "review", "redact"]
+        assert d["verdicts"]["allow"] == {"count": 2, "pct": 40.0}
+        assert d["verdicts"]["deny"] == {"count": 2, "pct": 40.0}
+        assert d["verdicts"]["review"] == {"count": 1, "pct": 20.0}
+        assert d["verdicts"]["redact"] == {"count": 0, "pct": 0.0}
+        assert d["deny_review"] == {"count": 3, "pct": 60.0}
+
+    def test_span_is_min_and_max_timestamp(self) -> None:
+        recs = _mixed_records()
+        d = audit_stats_dict(recs)
+        assert d["span"]["first"] == min(r.ts for r in recs)
+        assert d["span"]["last"] == max(r.ts for r in recs)
+
+    def test_top_rules_and_tools_ordered_by_hits(self) -> None:
+        d = audit_stats_dict(_mixed_records())
+        assert d["top_rules"][0] == {"name": "deny-web-to-email", "count": 2}
+        assert d["top_tools"][0] == {"name": "send_email", "count": 3}
+        # the no-rule decision is bucketed under the default label
+        rule_names = {r["name"] for r in d["top_rules"]}
+        assert "(default - no rule)" in rule_names
+
+    def test_top_n_limits_lists(self) -> None:
+        d = audit_stats_dict(_mixed_records(), top_n=1)
+        assert len(d["top_rules"]) == 1
+        assert len(d["top_tools"]) == 1
+
+    def test_is_json_serializable(self) -> None:
+        d = audit_stats_dict(_mixed_records(), source="log.jsonl")
+        # round-trips through JSON unchanged
+        assert json.loads(json.dumps(d)) == d
+
+
+class TestAuditStatsJsonCli:
+    def test_json_flag_emits_valid_json(self, tmp_path: Path) -> None:
+        log = _write_log(
+            tmp_path / "a.jsonl",
+            [
+                ("send_email", Verdict.DENY, "deny-web-to-email"),
+                ("web_fetch", Verdict.ALLOW, None),
+            ],
+        )
+        rc, out, err = _run(["audit", "stats", str(log), "--json"])
+        assert rc == 0
+        assert err == ""
+        payload = json.loads(out)
+        assert payload["records"] == 2
+        assert payload["source"] == str(log)
+        assert payload["verdicts"]["deny"]["count"] == 1
+        assert payload["verdicts"]["allow"]["count"] == 1
+
+    def test_json_respects_top_flag(self, tmp_path: Path) -> None:
+        log = _write_log(
+            tmp_path / "b.jsonl",
+            [
+                ("t1", Verdict.ALLOW, "r1"),
+                ("t2", Verdict.ALLOW, "r2"),
+                ("t3", Verdict.ALLOW, "r3"),
+            ],
+        )
+        rc, out, _ = _run(["audit", "stats", str(log), "--json", "--top", "2"])
+        assert rc == 0
+        payload = json.loads(out)
+        assert len(payload["top_tools"]) == 2
+        assert len(payload["top_rules"]) == 2
+
+    def test_json_empty_log(self, tmp_path: Path) -> None:
+        log = tmp_path / "empty.jsonl"
+        log.write_text("", encoding="utf-8")
+        rc, out, _ = _run(["audit", "stats", str(log), "--json"])
+        assert rc == 0
+        assert json.loads(out) == {"source": str(log), "records": 0}
+
+    def test_json_missing_file_exits_2(self, tmp_path: Path) -> None:
+        rc, out, err = _run(
+            ["audit", "stats", str(tmp_path / "nope.jsonl"), "--json"]
+        )
+        assert rc == 2
+        assert out == ""
+        assert "not found" in err
+
+    def test_json_malformed_log_exits_3(self, tmp_path: Path) -> None:
+        log = tmp_path / "bad.jsonl"
+        log.write_text("{not json}\n", encoding="utf-8")
+        rc, out, err = _run(["audit", "stats", str(log), "--json"])
+        assert rc == 3
+        assert out == ""
 
 
 if __name__ == "__main__":  # pragma: no cover

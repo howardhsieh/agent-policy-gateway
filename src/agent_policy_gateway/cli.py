@@ -55,10 +55,12 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import json
 import sys
 
 from agent_policy_gateway.audit import (
     AuditFormatError,
+    audit_stats_dict,
     read_audit,
     summarize_audit,
 )
@@ -535,6 +537,10 @@ def _cmd_audit_stats(args: argparse.Namespace) -> int:
     except AuditFormatError as exc:
         print(f"apg: {exc}", file=sys.stderr)
         return 3
+    if args.json:
+        stats = audit_stats_dict(records, source=args.log, top_n=args.top)
+        print(json.dumps(stats, indent=2))
+        return 0
     for line in summarize_audit(records, source=args.log, top_n=args.top):
         print(line)
     return 0
@@ -702,6 +708,11 @@ def _build_parser() -> argparse.ArgumentParser:
         default=5,
         metavar="N",
         help="Show the top N rules and tools by hit count (default 5).",
+    )
+    stats_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the summary as machine-readable JSON instead of text.",
     )
     stats_p.set_defaults(func=_cmd_audit_stats)
 
