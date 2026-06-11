@@ -479,5 +479,78 @@ class TestAuditStatsVerdictCli:
         assert exc.value.code == 2
 
 
+# --- R32: reading the log from stdin (``apg audit stats -``) ------------------
+
+
+class TestAuditStatsStdin:
+    """``-`` as the log positional reads JSONL from ``sys.stdin``."""
+
+    def _feed(self, monkeypatch: pytest.MonkeyPatch, text: str) -> None:
+        monkeypatch.setattr("sys.stdin", io.StringIO(text))
+
+    def test_dash_matches_file_summary(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        log = _write_log(
+            tmp_path / "a.jsonl",
+            [
+                ("send_email", Verdict.DENY, "deny-web-to-email"),
+                ("web_fetch", Verdict.ALLOW, None),
+            ],
+        )
+        rc_file, out_file, _ = _run(["audit", "stats", str(log)])
+        assert rc_file == 0
+
+        self._feed(monkeypatch, log.read_text())
+        rc_pipe, out_pipe, _ = _run(["audit", "stats", "-"])
+        assert rc_pipe == 0
+        # Only the header source line differs; everything below is identical.
+        assert out_file.splitlines()[1:] == out_pipe.splitlines()[1:]
+
+    def test_header_shows_stdin(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        log = _write_log(
+            tmp_path / "a.jsonl", [("web_fetch", Verdict.ALLOW, None)]
+        )
+        self._feed(monkeypatch, log.read_text())
+        rc, out, err = _run(["audit", "stats", "-"])
+        assert rc == 0
+        assert out.splitlines()[0] == "audit log summary: <stdin>"
+
+    def test_malformed_piped_line_exits_3(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._feed(monkeypatch, "{ this is not json }\n")
+        rc, out, err = _run(["audit", "stats", "-"])
+        assert rc == 3
+        assert "line 1" in err
+
+    def test_json_over_stdin(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        log = _write_log(
+            tmp_path / "a.jsonl",
+            [
+                ("send_email", Verdict.DENY, "deny-web-to-email"),
+                ("web_fetch", Verdict.ALLOW, None),
+            ],
+        )
+        self._feed(monkeypatch, log.read_text())
+        rc, out, err = _run(["audit", "stats", "-", "--json"])
+        assert rc == 0
+        data = json.loads(out)
+        assert data["source"] == "<stdin>"
+        assert data["records"] == 2
+
+    def test_empty_stdin_yields_zero_records(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._feed(monkeypatch, "")
+        rc, out, err = _run(["audit", "stats", "-"])
+        assert rc == 0
+        assert "records:     0" in out
+
+
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-v"]))

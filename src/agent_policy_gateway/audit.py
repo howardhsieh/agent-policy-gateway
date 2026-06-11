@@ -57,6 +57,7 @@ __all__ = [
     "filter_by_verdict",
     "format_record",
     "read_audit",
+    "read_audit_stdin",
     "replay_main",
     "summarize_audit",
     "verify_chain",
@@ -266,7 +267,21 @@ def read_audit(path: str | os.PathLike[str]) -> Iterator[AuditRecord]:
     return _iter_audit(fp)
 
 
-def _iter_audit(fp: IO[str]) -> Iterator[AuditRecord]:
+def read_audit_stdin() -> Iterator[AuditRecord]:
+    """Yield :class:`AuditRecord` objects parsed from ``sys.stdin``.
+
+    The streaming counterpart to :func:`read_audit`: instead of opening a path
+    it reads the process's standard input, so audit logs can be piped
+    (``cat log.jsonl | apg audit stats -``). The same line parser is reused, so
+    a malformed line still raises :class:`AuditFormatError` annotated with its
+    line number. Unlike :func:`read_audit`, ``sys.stdin`` is *not* closed when
+    iteration finishes -- the caller owns that stream's lifetime, and a missing
+    file (``FileNotFoundError``) is impossible because nothing is opened.
+    """
+    return _iter_audit(sys.stdin, close=False)
+
+
+def _iter_audit(fp: IO[str], *, close: bool = True) -> Iterator[AuditRecord]:
     try:
         for lineno, raw in enumerate(fp, start=1):
             line = raw.strip()
@@ -287,7 +302,8 @@ def _iter_audit(fp: IO[str]) -> Iterator[AuditRecord]:
             except AuditFormatError as exc:
                 raise AuditFormatError(f"line {lineno}: {exc}") from exc
     finally:
-        fp.close()
+        if close:
+            fp.close()
 
 
 # --- chain verification (R27) -------------------------------------------------

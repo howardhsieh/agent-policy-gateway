@@ -63,6 +63,7 @@ from agent_policy_gateway.audit import (
     audit_stats_dict,
     filter_by_verdict,
     read_audit,
+    read_audit_stdin,
     summarize_audit,
 )
 from agent_policy_gateway.core import TaintLabel, ToolCall, Verdict
@@ -530,11 +531,21 @@ def _cmd_lint(args: argparse.Namespace) -> int:
 def _cmd_audit_stats(args: argparse.Namespace) -> int:
     """Summarize a JSONL audit log. Exit codes mirror ``apg-replay``:
     ``0`` ok, ``2`` missing file, ``3`` malformed log line."""
+    # R32: ``-`` reads the JSONL log from stdin (pipe support); the source label
+    # in the summary becomes ``<stdin>`` and a missing-file (exit 2) is
+    # impossible because nothing is opened. Any other value is a path.
+    if args.log == "-":
+        source = "<stdin>"
+        reader = read_audit_stdin()
+    else:
+        source = args.log
+        try:
+            reader = read_audit(args.log)
+        except FileNotFoundError:
+            print(f"apg: audit log not found: {args.log}", file=sys.stderr)
+            return 2
     try:
-        records = list(read_audit(args.log))
-    except FileNotFoundError:
-        print(f"apg: audit log not found: {args.log}", file=sys.stderr)
-        return 2
+        records = list(reader)
     except AuditFormatError as exc:
         print(f"apg: {exc}", file=sys.stderr)
         return 3
@@ -543,10 +554,10 @@ def _cmd_audit_stats(args: argparse.Namespace) -> int:
     # reflect the subset. ``None`` (no --verdict) leaves the records untouched.
     records = filter_by_verdict(records, args.verdict)
     if args.json:
-        stats = audit_stats_dict(records, source=args.log, top_n=args.top)
+        stats = audit_stats_dict(records, source=source, top_n=args.top)
         print(json.dumps(stats, indent=2))
         return 0
-    for line in summarize_audit(records, source=args.log, top_n=args.top):
+    for line in summarize_audit(records, source=source, top_n=args.top):
         print(line)
     return 0
 
@@ -706,7 +717,10 @@ def _build_parser() -> argparse.ArgumentParser:
             "is missing, 3 if a log line is malformed."
         ),
     )
-    stats_p.add_argument("log", help="Path to the JSONL audit log file.")
+    stats_p.add_argument(
+        "log",
+        help="Path to the JSONL audit log file, or '-' to read from stdin.",
+    )
     stats_p.add_argument(
         "--top",
         type=int,
