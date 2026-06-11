@@ -15,7 +15,11 @@ from pathlib import Path
 
 import pytest
 
-from agent_policy_gateway import audit_stats_dict, summarize_audit
+from agent_policy_gateway import (
+    audit_stats_dict,
+    filter_by_verdict,
+    summarize_audit,
+)
 from agent_policy_gateway.audit import (
     AuditRecord,
     JsonlAuditWriter,
@@ -337,6 +341,142 @@ class TestAuditStatsJsonCli:
         rc, out, err = _run(["audit", "stats", str(log), "--json"])
         assert rc == 3
         assert out == ""
+
+
+# --- verdict filter (R31) -----------------------------------------------------
+
+
+def _mixed_log(path: Path) -> Path:
+    """A log with every verdict represented at least once."""
+    return _write_log(
+        path,
+        [
+            ("send_email", Verdict.DENY, "deny-web-to-email"),
+            ("send_email", Verdict.DENY, "deny-web-to-email"),
+            ("web_fetch", Verdict.ALLOW, None),
+            ("kb_lookup", Verdict.ALLOW, "allow-internal-readers"),
+            ("send_email", Verdict.REVIEW, "review-pii-egress"),
+            ("scrub_tool", Verdict.REDACT, "redact-pii"),
+        ],
+    )
+
+
+class TestFilterByVerdict:
+    def _records(self) -> list[AuditRecord]:
+        clock = _clock()
+        rows = [
+            ("send_email", Verdict.DENY, "deny"),
+            ("web_fetch", Verdict.ALLOW, None),
+            ("send_email", Verdict.REVIEW, "review"),
+            ("scrub", Verdict.REDACT, "redact"),
+        ]
+        return [
+            AuditRecord(
+                ts=clock(),
+                call=ToolCall(tool_name=t, agent_id="a"),
+                decision=Decision(verdict=v, rule_id=r),
+            )
+            for t, v, r in rows
+        ]
+
+    def test_none_returns_all_unchanged(self) -> None:
+        recs = self._records()
+        assert filter_by_verdict(recs, None) == recs
+
+    def test_empty_iterable_returns_all(self) -> None:
+        recs = self._records()
+        assert filter_by_verdict(recs, []) == recs
+
+    def test_single_verdict_keeps_only_matches(self) -> None:
+        recs = self._records()
+        out = filter_by_verdict(recs, ["deny"])
+        assert [r.decision.verdict for r in out] == [Verdict.DENY]
+
+    def test_accepts_enum_members(self) -> None:
+        recs = self._records()
+        out = filter_by_verdict(recs, [Verdict.ALLOW])
+        assert [r.decision.verdict for r in out] == [Verdict.ALLOW]
+
+    def test_multiple_verdicts_union(self) -> None:
+        recs = self._records()
+        out = filter_by_verdict(recs, ["deny", "review"])
+        assert {r.decision.verdict for r in out} == {Verdict.DENY, Verdict.REVIEW}
+
+    def test_no_match_yields_empty_list(self) -> None:
+        # a log with no redact records filtered to redact -> empty
+        recs = [r for r in self._records() if r.decision.verdict is not Verdict.REDACT]
+        assert filter_by_verdict(recs, ["redact"]) == []
+
+    def test_preserves_order(self) -> None:
+        recs = self._records()
+        out = filter_by_verdict(recs, ["deny", "allow", "review", "redact"])
+        assert out == recs
+
+
+class TestAuditStatsVerdictCli:
+    def test_text_filter_to_deny(self, tmp_path: Path) -> None:
+        log = _mixed_log(tmp_path / "m.jsonl")
+        rc, out, err = _run(["audit", "stats", str(log), "--verdict", "deny"])
+        assert rc == 0
+        # only the two deny records are summarized
+        assert "records:     2" in out
+        assert "deny+review: 2/2  (100.0%)" in out
+        # allow-only tools/rules from the full log do not appear
+        assert "web_fetch" not in out
+        assert "allow-internal-readers" not in out
+
+    def test_json_filter_to_deny(self, tmp_path: Path) -> None:
+        log = _mixed_log(tmp_path / "m.jsonl")
+        rc, out, err = _run(["audit", "stats", str(log), "--json", "--verdict", "deny"])
+        assert rc == 0
+        data = json.loads(out)
+        assert data["records"] == 2
+        assert data["verdicts"]["deny"]["count"] == 2
+        assert data["verdicts"]["allow"]["count"] == 0
+        names = {t["name"] for t in data["top_tools"]}
+        assert names == {"send_email"}
+
+    def test_repeatable_verdict_union(self, tmp_path: Path) -> None:
+        log = _mixed_log(tmp_path / "m.jsonl")
+        rc, out, err = _run(
+            ["audit", "stats", str(log), "--json", "--verdict", "deny", "--verdict", "review"]
+        )
+        assert rc == 0
+        data = json.loads(out)
+        assert data["records"] == 3  # 2 deny + 1 review
+        assert data["verdicts"]["deny"]["count"] == 2
+        assert data["verdicts"]["review"]["count"] == 1
+
+    def test_empty_after_filter_summarizes_as_empty_log(self, tmp_path: Path) -> None:
+        # a log with no review records, filtered to review
+        log = _write_log(
+            tmp_path / "noreview.jsonl",
+            [
+                ("send_email", Verdict.DENY, "deny"),
+                ("web_fetch", Verdict.ALLOW, None),
+            ],
+        )
+        rc, out, err = _run(["audit", "stats", str(log), "--verdict", "review"])
+        assert rc == 0
+        assert "records:     0" in out
+        assert "(log is empty - no records to summarize)" in out
+
+    def test_empty_after_filter_json(self, tmp_path: Path) -> None:
+        log = _write_log(
+            tmp_path / "noreview.jsonl",
+            [("send_email", Verdict.DENY, "deny")],
+        )
+        rc, out, err = _run(["audit", "stats", str(log), "--json", "--verdict", "review"])
+        assert rc == 0
+        data = json.loads(out)
+        assert data["records"] == 0
+        assert "verdicts" not in data  # empty-log shortcut
+
+    def test_unknown_verdict_is_choices_error_exit_2(self, tmp_path: Path) -> None:
+        log = _mixed_log(tmp_path / "m.jsonl")
+        with pytest.raises(SystemExit) as exc:
+            _run(["audit", "stats", str(log), "--verdict", "bogus"])
+        assert exc.value.code == 2
 
 
 if __name__ == "__main__":  # pragma: no cover

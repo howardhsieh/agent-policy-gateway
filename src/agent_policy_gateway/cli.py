@@ -61,10 +61,11 @@ import sys
 from agent_policy_gateway.audit import (
     AuditFormatError,
     audit_stats_dict,
+    filter_by_verdict,
     read_audit,
     summarize_audit,
 )
-from agent_policy_gateway.core import TaintLabel, ToolCall
+from agent_policy_gateway.core import TaintLabel, ToolCall, Verdict
 from agent_policy_gateway.policy import (
     Policy,
     PolicyError,
@@ -537,6 +538,10 @@ def _cmd_audit_stats(args: argparse.Namespace) -> int:
     except AuditFormatError as exc:
         print(f"apg: {exc}", file=sys.stderr)
         return 3
+    # R31: restrict the summary to the requested verdict(s) before either
+    # renderer runs, so the record count, span, top-rules and top-tools all
+    # reflect the subset. ``None`` (no --verdict) leaves the records untouched.
+    records = filter_by_verdict(records, args.verdict)
     if args.json:
         stats = audit_stats_dict(records, source=args.log, top_n=args.top)
         print(json.dumps(stats, indent=2))
@@ -713,6 +718,18 @@ def _build_parser() -> argparse.ArgumentParser:
         "--json",
         action="store_true",
         help="Emit the summary as machine-readable JSON instead of text.",
+    )
+    stats_p.add_argument(
+        "--verdict",
+        action="append",
+        choices=[v.value for v in Verdict],
+        default=None,
+        metavar="{allow,deny,review,redact}",
+        help=(
+            "Only summarize records with the given verdict. Repeatable to "
+            "include several (e.g. --verdict deny --verdict review); omit to "
+            "summarize all records."
+        ),
     )
     stats_p.set_defaults(func=_cmd_audit_stats)
 

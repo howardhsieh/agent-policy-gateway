@@ -54,6 +54,7 @@ __all__ = [
     "ChainVerifyResult",
     "JsonlAuditWriter",
     "audit_stats_dict",
+    "filter_by_verdict",
     "format_record",
     "read_audit",
     "replay_main",
@@ -364,6 +365,32 @@ def verify_chain(path: str | os.PathLike[str]) -> ChainVerifyResult:
             records += 1
             expected = _line_digest(line)
     return ChainVerifyResult(ok=True, records=records)
+
+
+# --- verdict filter (R31) -----------------------------------------------------
+
+
+def filter_by_verdict(
+    records: Iterable[AuditRecord],
+    verdicts: Iterable[Verdict | str] | None,
+) -> list[AuditRecord]:
+    """Return only the records whose decision verdict is in ``verdicts``.
+
+    ``verdicts`` may mix :class:`Verdict` members and their string values
+    (e.g. ``"deny"``); a falsy value (``None`` or an empty collection) means
+    "no filter" and returns every record unchanged. The result preserves input
+    order and is materialized into a list so callers can summarize it more than
+    once.
+
+    Pure (no I/O), mirroring :func:`summarize_audit` / :func:`audit_stats_dict`,
+    so the ``apg audit stats --verdict`` subcommand can apply it before handing
+    the subset to either renderer. A filter that matches nothing yields an empty
+    list, which both renderers treat as an empty log.
+    """
+    if not verdicts:
+        return list(records)
+    wanted = {v.value if isinstance(v, Verdict) else str(v) for v in verdicts}
+    return [r for r in records if r.decision.verdict.value in wanted]
 
 
 # --- audit stats summary (R29) ------------------------------------------------
