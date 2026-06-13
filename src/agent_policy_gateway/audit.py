@@ -429,6 +429,11 @@ def _top(counter: Counter[str], n: int) -> list[tuple[str, int]]:
 _NO_RULE = "(default - no rule)"
 
 
+#: Label used for tool calls that carried no ``agent_id`` (unattributed
+#: traffic rather than a named agent identity).
+_NO_AGENT = "(unattributed - no agent_id)"
+
+
 def summarize_audit(
     records: Iterable[AuditRecord],
     *,
@@ -441,7 +446,8 @@ def summarize_audit(
     record count, the first/last timestamp span, a fixed three-line verdict
     breakdown (always ``allow``/``deny``/``review`` in that order, even when a
     verdict has zero hits), the combined deny+review share, and the top
-    ``top_n`` rules and tools by hit count. An empty log produces the header,
+    ``top_n`` rules, tools, and agents by hit count. An empty log produces the
+    header,
     a zero count, and a single explanatory line.
 
     Logic only: this function performs no I/O, mirroring ``cli._explain`` /
@@ -484,6 +490,13 @@ def summarize_audit(
     lines.append(f"top tools (by hits, max {top_n}):")
     for name, count in _top(tool_counts, top_n):
         lines.append(f"  {count:>5d}  {name}")
+
+    agent_counts: Counter[str] = Counter(
+        r.call.agent_id if r.call.agent_id else _NO_AGENT for r in recs
+    )
+    lines.append(f"top agents (by hits, max {top_n}):")
+    for name, count in _top(agent_counts, top_n):
+        lines.append(f"  {count:>5d}  {name}")
     return lines
 
 
@@ -498,7 +511,8 @@ def audit_stats_dict(
     This is the structured counterpart to :func:`summarize_audit`: it computes
     the same figures (record count, timestamp span, per-verdict counts and
     percentages for all four verdicts in enum order, the combined deny+review
-    share, and the top ``top_n`` rules and tools by hit count) but returns them
+    share, and the top ``top_n`` rules, tools, and agents by hit count) but
+    returns them
     as a dict instead of rendering plain-text lines. Percentages are floats
     rounded to one decimal place, matching the text summary.
 
@@ -542,6 +556,13 @@ def audit_stats_dict(
     tool_counts: Counter[str] = Counter(r.call.tool_name for r in recs)
     result["top_tools"] = [
         {"name": name, "count": count} for name, count in _top(tool_counts, top_n)
+    ]
+
+    agent_counts: Counter[str] = Counter(
+        r.call.agent_id if r.call.agent_id else _NO_AGENT for r in recs
+    )
+    result["top_agents"] = [
+        {"name": name, "count": count} for name, count in _top(agent_counts, top_n)
     ]
     return result
 

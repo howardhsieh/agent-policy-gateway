@@ -343,6 +343,114 @@ class TestAuditStatsJsonCli:
         assert out == ""
 
 
+# --- top agents breakdown (R33) -----------------------------------------------
+
+
+def _agent_records(
+    agents: list[str | None],
+) -> list[AuditRecord]:
+    """One ALLOW record per entry, varying only ``agent_id``."""
+    clock = _clock()
+    return [
+        AuditRecord(
+            ts=clock(),
+            call=ToolCall(tool_name="t", agent_id=agent),
+            decision=Decision(verdict=Verdict.ALLOW, rule_id=None),
+        )
+        for agent in agents
+    ]
+
+
+class TestTopAgentsSummary:
+    def test_text_block_ranks_agents_by_hits(self) -> None:
+        recs = _agent_records(["beta", "beta", "alpha", "beta", "alpha"])
+        lines = summarize_audit(recs)
+        text = "\n".join(lines)
+        assert "top agents (by hits, max 5):" in text
+        assert "      3  beta" in text
+        assert "      2  alpha" in text
+        # busiest agent listed before the less-busy one
+        assert text.index("  beta") < text.index("  alpha")
+
+    def test_missing_agent_id_bucketed_under_label(self) -> None:
+        recs = _agent_records(["alpha", None, None])
+        text = "\n".join(summarize_audit(recs))
+        assert "      2  (unattributed - no agent_id)" in text
+        assert "      1  alpha" in text
+
+    def test_ties_break_by_name_ascending(self) -> None:
+        recs = _agent_records(["zebra", "apple"])
+        text = "\n".join(summarize_audit(recs))
+        block = text.split("top agents")[1]
+        assert block.index("apple") < block.index("zebra")
+
+    def test_top_n_truncates_agent_block(self) -> None:
+        recs = _agent_records(["a", "a", "b", "c"])
+        text = "\n".join(summarize_audit(recs, top_n=1))
+        block = text.split("top agents")[1]
+        assert "  a" in block
+        assert "  b" not in block and "  c" not in block
+
+    def test_empty_log_has_no_agent_block(self) -> None:
+        lines = summarize_audit([], source="x.jsonl")
+        assert all("top agents" not in line for line in lines)
+
+
+class TestTopAgentsDict:
+    def test_top_agents_ordered_by_hits(self) -> None:
+        d = audit_stats_dict(_agent_records(["beta", "beta", "alpha"]))
+        assert d["top_agents"][0] == {"name": "beta", "count": 2}
+        assert d["top_agents"][1] == {"name": "alpha", "count": 1}
+
+    def test_missing_agent_id_bucketed(self) -> None:
+        d = audit_stats_dict(_agent_records(["alpha", None, None]))
+        names = {a["name"]: a["count"] for a in d["top_agents"]}
+        assert names["(unattributed - no agent_id)"] == 2
+
+    def test_top_n_limits_agent_list(self) -> None:
+        d = audit_stats_dict(_agent_records(["a", "b", "c"]), top_n=1)
+        assert len(d["top_agents"]) == 1
+
+    def test_empty_log_has_no_top_agents_key(self) -> None:
+        d = audit_stats_dict([], source="x.jsonl")
+        assert "top_agents" not in d
+
+    def test_is_json_serializable(self) -> None:
+        d = audit_stats_dict(_agent_records(["a", "b", None]))
+        assert json.loads(json.dumps(d)) == d
+
+
+class TestTopAgentsCli:
+    def test_text_cli_shows_agent_block(self, tmp_path: Path) -> None:
+        log = tmp_path / "agents.jsonl"
+        writer = JsonlAuditWriter(log, clock=_clock())
+        with writer:
+            for agent in ("svc.alpha", "svc.alpha", "svc.beta"):
+                writer(
+                    ToolCall(tool_name="send_email", agent_id=agent),
+                    Decision(verdict=Verdict.ALLOW, rule_id=None),
+                )
+        rc, out, err = _run(["audit", "stats", str(log)])
+        assert rc == 0
+        assert "top agents (by hits, max 5):" in out
+        assert "      2  svc.alpha" in out
+        assert "      1  svc.beta" in out
+
+    def test_json_cli_includes_top_agents(self, tmp_path: Path) -> None:
+        log = tmp_path / "agents.jsonl"
+        writer = JsonlAuditWriter(log, clock=_clock())
+        with writer:
+            for agent in ("svc.alpha", "svc.alpha", "svc.beta"):
+                writer(
+                    ToolCall(tool_name="send_email", agent_id=agent),
+                    Decision(verdict=Verdict.ALLOW, rule_id=None),
+                )
+        rc, out, _ = _run(["audit", "stats", str(log), "--json"])
+        assert rc == 0
+        payload = json.loads(out)
+        assert payload["top_agents"][0] == {"name": "svc.alpha", "count": 2}
+
+
 # --- verdict filter (R31) -----------------------------------------------------
 
 
