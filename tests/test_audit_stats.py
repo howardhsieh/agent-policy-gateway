@@ -17,6 +17,7 @@ import pytest
 
 from agent_policy_gateway import (
     audit_stats_dict,
+    filter_by_time,
     filter_by_verdict,
     summarize_audit,
 )
@@ -658,6 +659,160 @@ class TestAuditStatsStdin:
         rc, out, err = _run(["audit", "stats", "-"])
         assert rc == 0
         assert "records:     0" in out
+
+
+
+# --- R34: timestamp-window filter (``--since`` / ``--until``) ------------------
+
+
+class TestFilterByTime:
+    """Pure ``filter_by_time`` helper: inclusive, lexicographic ISO bounds."""
+
+    def _records(self) -> list[AuditRecord]:
+        tss = [
+            "2026-06-08T00:00:00.000000Z",
+            "2026-06-09T12:00:00.000000Z",
+            "2026-06-10T23:59:59.000000Z",
+            "2026-06-11T06:30:00.000000Z",
+        ]
+        return [
+            AuditRecord(
+                ts=ts,
+                call=ToolCall(tool_name="t", agent_id="a"),
+                decision=Decision(verdict=Verdict.ALLOW, rule_id=None),
+            )
+            for ts in tss
+        ]
+
+    def test_no_bounds_returns_all_unchanged(self) -> None:
+        recs = self._records()
+        assert filter_by_time(recs) == recs
+
+    def test_since_is_inclusive_lower_bound(self) -> None:
+        recs = self._records()
+        out = filter_by_time(recs, since="2026-06-09T12:00:00.000000Z")
+        assert [r.ts for r in out] == [
+            "2026-06-09T12:00:00.000000Z",
+            "2026-06-10T23:59:59.000000Z",
+            "2026-06-11T06:30:00.000000Z",
+        ]
+
+    def test_until_is_inclusive_upper_bound(self) -> None:
+        recs = self._records()
+        out = filter_by_time(recs, until="2026-06-10T23:59:59.000000Z")
+        assert [r.ts for r in out] == [
+            "2026-06-08T00:00:00.000000Z",
+            "2026-06-09T12:00:00.000000Z",
+            "2026-06-10T23:59:59.000000Z",
+        ]
+
+    def test_since_and_until_window(self) -> None:
+        recs = self._records()
+        out = filter_by_time(
+            recs,
+            since="2026-06-09T00:00:00.000000Z",
+            until="2026-06-10T23:59:59.000000Z",
+        )
+        assert [r.ts for r in out] == [
+            "2026-06-09T12:00:00.000000Z",
+            "2026-06-10T23:59:59.000000Z",
+        ]
+
+    def test_iso_date_prefix_works_as_bound(self) -> None:
+        # a bare date prefix selects from the start of that day onward
+        recs = self._records()
+        out = filter_by_time(recs, since="2026-06-10")
+        assert [r.ts for r in out] == [
+            "2026-06-10T23:59:59.000000Z",
+            "2026-06-11T06:30:00.000000Z",
+        ]
+
+    def test_window_matching_nothing_is_empty(self) -> None:
+        recs = self._records()
+        assert filter_by_time(recs, since="2027-01-01T00:00:00.000000Z") == []
+
+    def test_preserves_order(self) -> None:
+        recs = self._records()
+        out = filter_by_time(recs, since="2026-06-08T00:00:00.000000Z")
+        assert out == recs
+
+
+class TestAuditStatsTimeCli:
+    """``apg audit stats --since/--until`` over a real JSONL log."""
+
+    def _log(self, path: Path) -> Path:
+        # _clock() yields 2026-06-08T00:00:00, ...:01, ...:02, ...:03
+        return _write_log(
+            path,
+            [
+                ("send_email", Verdict.DENY, "deny"),
+                ("web_fetch", Verdict.ALLOW, None),
+                ("kb_lookup", Verdict.ALLOW, "allow"),
+                ("send_email", Verdict.REVIEW, "review"),
+            ],
+        )
+
+    def test_since_filters_text(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        rc, out, err = _run(
+            ["audit", "stats", str(log), "--since", "2026-06-08T00:00:02.000000Z"]
+        )
+        assert rc == 0
+        assert "records:     2" in out
+
+    def test_until_filters_text(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        rc, out, err = _run(
+            ["audit", "stats", str(log), "--until", "2026-06-08T00:00:01.000000Z"]
+        )
+        assert rc == 0
+        assert "records:     2" in out
+
+    def test_window_json_scopes_span(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        rc, out, err = _run(
+            [
+                "audit", "stats", str(log), "--json",
+                "--since", "2026-06-08T00:00:01.000000Z",
+                "--until", "2026-06-08T00:00:02.000000Z",
+            ]
+        )
+        assert rc == 0
+        data = json.loads(out)
+        assert data["records"] == 2
+        assert data["span"]["first"] == "2026-06-08T00:00:01.000000Z"
+        assert data["span"]["last"] == "2026-06-08T00:00:02.000000Z"
+
+    def test_composes_with_verdict(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        # since 00:00:01 keeps web_fetch(allow)/kb_lookup(allow)/send_email(review),
+        # then --verdict allow narrows to the two allow records.
+        rc, out, err = _run(
+            [
+                "audit", "stats", str(log), "--json",
+                "--since", "2026-06-08T00:00:01.000000Z",
+                "--verdict", "allow",
+            ]
+        )
+        assert rc == 0
+        data = json.loads(out)
+        assert data["records"] == 2
+        assert data["verdicts"]["allow"]["count"] == 2
+
+    def test_window_matching_nothing_is_empty_log(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        rc, out, err = _run(
+            ["audit", "stats", str(log), "--since", "2027-01-01T00:00:00.000000Z"]
+        )
+        assert rc == 0
+        assert "records:     0" in out
+        assert "(log is empty - no records to summarize)" in out
+
+    def test_no_window_matches_all(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        rc, out, err = _run(["audit", "stats", str(log)])
+        assert rc == 0
+        assert "records:     4" in out
 
 
 if __name__ == "__main__":  # pragma: no cover

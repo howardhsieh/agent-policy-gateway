@@ -409,6 +409,43 @@ def filter_by_verdict(
     return [r for r in records if r.decision.verdict.value in wanted]
 
 
+def filter_by_time(
+    records: Iterable[AuditRecord],
+    *,
+    since: str | None = None,
+    until: str | None = None,
+) -> list[AuditRecord]:
+    """Return only the records whose ``ts`` falls within ``[since, until]``.
+
+    Both bounds are *inclusive* and compared **lexicographically** against
+    ``record.ts``. Audit timestamps are ISO-8601 UTC
+    (``YYYY-MM-DDTHH:MM:SS.ffffffZ``), so string ordering is chronological --
+    the same property :func:`summarize_audit` already relies on for the span
+    min/max -- and any ISO prefix works as a bound (e.g. ``2026-06-13`` selects
+    from the start of that day; a full timestamp pins an exact instant). ``since``
+    keeps records with ``ts >= since``; ``until`` keeps records with
+    ``ts <= until``. A ``None`` bound is open on that side, and
+    ``since=None, until=None`` returns every record unchanged.
+
+    Pure (no I/O), mirroring :func:`filter_by_verdict` /
+    :func:`summarize_audit`, so the ``apg audit stats --since/--until``
+    subcommand can apply it before handing the subset to either renderer. The
+    result preserves input order and is materialized into a list so callers can
+    summarize it more than once. A window that matches nothing yields an empty
+    list, which both renderers treat as an empty log.
+    """
+    if since is None and until is None:
+        return list(records)
+    out: list[AuditRecord] = []
+    for r in records:
+        if since is not None and r.ts < since:
+            continue
+        if until is not None and r.ts > until:
+            continue
+        out.append(r)
+    return out
+
+
 # --- audit stats summary (R29) ------------------------------------------------
 
 

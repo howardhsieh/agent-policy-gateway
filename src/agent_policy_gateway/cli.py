@@ -61,6 +61,7 @@ import sys
 from agent_policy_gateway.audit import (
     AuditFormatError,
     audit_stats_dict,
+    filter_by_time,
     filter_by_verdict,
     read_audit,
     read_audit_stdin,
@@ -553,6 +554,10 @@ def _cmd_audit_stats(args: argparse.Namespace) -> int:
     # renderer runs, so the record count, span, top-rules and top-tools all
     # reflect the subset. ``None`` (no --verdict) leaves the records untouched.
     records = filter_by_verdict(records, args.verdict)
+    # R34: scope the summary to a [--since, --until] timestamp window (inclusive,
+    # lexicographic on the ISO-8601 ts). Composes with --verdict; both default
+    # to None (no window). A window matching nothing summarizes as an empty log.
+    records = filter_by_time(records, since=args.since, until=args.until)
     if args.json:
         stats = audit_stats_dict(records, source=source, top_n=args.top)
         print(json.dumps(stats, indent=2))
@@ -743,6 +748,24 @@ def _build_parser() -> argparse.ArgumentParser:
             "Only summarize records with the given verdict. Repeatable to "
             "include several (e.g. --verdict deny --verdict review); omit to "
             "summarize all records."
+        ),
+    )
+    stats_p.add_argument(
+        "--since",
+        default=None,
+        metavar="TS",
+        help=(
+            "Only summarize records at or after this ISO-8601 timestamp "
+            "(inclusive lower bound; an ISO prefix like 2026-06-13 works)."
+        ),
+    )
+    stats_p.add_argument(
+        "--until",
+        default=None,
+        metavar="TS",
+        help=(
+            "Only summarize records at or before this ISO-8601 timestamp "
+            "(inclusive upper bound; an ISO prefix like 2026-06-13 works)."
         ),
     )
     stats_p.set_defaults(func=_cmd_audit_stats)
