@@ -62,6 +62,7 @@ from agent_policy_gateway.audit import (
     AuditFormatError,
     audit_stats_dict,
     filter_by_time,
+    filter_by_tool,
     filter_by_verdict,
     read_audit,
     read_audit_stdin,
@@ -558,6 +559,10 @@ def _cmd_audit_stats(args: argparse.Namespace) -> int:
     # lexicographic on the ISO-8601 ts). Composes with --verdict; both default
     # to None (no window). A window matching nothing summarizes as an empty log.
     records = filter_by_time(records, since=args.since, until=args.until)
+    # R35: narrow to records whose tool name matches any --tool glob (union,
+    # fnmatch). Applied before either renderer so every figure reflects the
+    # subset; composes with --verdict/--since/--until. None means no filter.
+    records = filter_by_tool(records, args.tool)
     if args.json:
         stats = audit_stats_dict(records, source=source, top_n=args.top)
         print(json.dumps(stats, indent=2))
@@ -766,6 +771,17 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Only summarize records at or before this ISO-8601 timestamp "
             "(inclusive upper bound; an ISO prefix like 2026-06-13 works)."
+        ),
+    )
+    stats_p.add_argument(
+        "--tool",
+        action="append",
+        default=None,
+        metavar="GLOB",
+        help=(
+            "Only summarize records whose tool name matches this fnmatch glob "
+            "(e.g. --tool 'send_*'). Repeatable to union several patterns; a "
+            "literal name selects an exact match; omit to summarize all tools."
         ),
     )
     stats_p.set_defaults(func=_cmd_audit_stats)

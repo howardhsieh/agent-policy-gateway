@@ -18,6 +18,7 @@ import pytest
 from agent_policy_gateway import (
     audit_stats_dict,
     filter_by_time,
+    filter_by_tool,
     filter_by_verdict,
     summarize_audit,
 )
@@ -809,6 +810,130 @@ class TestAuditStatsTimeCli:
         assert "(log is empty - no records to summarize)" in out
 
     def test_no_window_matches_all(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        rc, out, err = _run(["audit", "stats", str(log)])
+        assert rc == 0
+        assert "records:     4" in out
+
+
+
+class TestFilterByTool:
+    """Pure ``filter_by_tool`` helper: fnmatch globs over ``call.tool_name``."""
+
+    def _records(self) -> list[AuditRecord]:
+        names = ["send_email", "send_sms", "web_fetch", "kb_lookup"]
+        return [
+            AuditRecord(
+                ts="2026-06-08T00:00:00.000000Z",
+                call=ToolCall(tool_name=name, agent_id="a"),
+                decision=Decision(verdict=Verdict.ALLOW, rule_id=None),
+            )
+            for name in names
+        ]
+
+    def test_no_filter_returns_all_unchanged(self) -> None:
+        recs = self._records()
+        assert filter_by_tool(recs, None) == recs
+
+    def test_empty_patterns_returns_all_unchanged(self) -> None:
+        recs = self._records()
+        assert filter_by_tool(recs, []) == recs
+
+    def test_single_glob_matches_prefix(self) -> None:
+        recs = self._records()
+        out = filter_by_tool(recs, ["send_*"])
+        assert [r.call.tool_name for r in out] == ["send_email", "send_sms"]
+
+    def test_literal_pattern_is_exact_match(self) -> None:
+        recs = self._records()
+        out = filter_by_tool(recs, ["web_fetch"])
+        assert [r.call.tool_name for r in out] == ["web_fetch"]
+
+    def test_multi_pattern_union(self) -> None:
+        recs = self._records()
+        out = filter_by_tool(recs, ["web_fetch", "kb_*"])
+        assert [r.call.tool_name for r in out] == ["web_fetch", "kb_lookup"]
+
+    def test_no_match_is_empty(self) -> None:
+        recs = self._records()
+        assert filter_by_tool(recs, ["nope_*"]) == []
+
+    def test_matching_is_case_sensitive(self) -> None:
+        recs = self._records()
+        assert filter_by_tool(recs, ["SEND_*"]) == []
+
+    def test_preserves_order(self) -> None:
+        recs = self._records()
+        out = filter_by_tool(recs, ["*"])
+        assert out == recs
+
+
+class TestAuditStatsToolCli:
+    """``apg audit stats --tool`` over a real JSONL log."""
+
+    def _log(self, path: Path) -> Path:
+        return _write_log(
+            path,
+            [
+                ("send_email", Verdict.DENY, "deny"),
+                ("web_fetch", Verdict.ALLOW, None),
+                ("kb_lookup", Verdict.ALLOW, "allow"),
+                ("send_email", Verdict.REVIEW, "review"),
+            ],
+        )
+
+    def test_glob_filters_text(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        rc, out, err = _run(["audit", "stats", str(log), "--tool", "send_*"])
+        assert rc == 0
+        assert "records:     2" in out
+
+    def test_glob_filters_json(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        rc, out, err = _run(
+            ["audit", "stats", str(log), "--json", "--tool", "send_*"]
+        )
+        assert rc == 0
+        data = json.loads(out)
+        assert data["records"] == 2
+        assert data["verdicts"]["deny"]["count"] == 1
+        assert data["verdicts"]["review"]["count"] == 1
+
+    def test_repeatable_tool_unions(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        rc, out, err = _run(
+            [
+                "audit", "stats", str(log), "--json",
+                "--tool", "web_fetch", "--tool", "kb_lookup",
+            ]
+        )
+        assert rc == 0
+        data = json.loads(out)
+        assert data["records"] == 2
+        assert data["verdicts"]["allow"]["count"] == 2
+
+    def test_composes_with_verdict(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        # send_* matches the deny+review rows; --verdict deny narrows to one.
+        rc, out, err = _run(
+            [
+                "audit", "stats", str(log), "--json",
+                "--tool", "send_*", "--verdict", "deny",
+            ]
+        )
+        assert rc == 0
+        data = json.loads(out)
+        assert data["records"] == 1
+        assert data["verdicts"]["deny"]["count"] == 1
+
+    def test_no_match_is_empty_log(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        rc, out, err = _run(["audit", "stats", str(log), "--tool", "nope_*"])
+        assert rc == 0
+        assert "records:     0" in out
+        assert "(log is empty - no records to summarize)" in out
+
+    def test_no_tool_matches_all(self, tmp_path: Path) -> None:
         log = self._log(tmp_path / "t.jsonl")
         rc, out, err = _run(["audit", "stats", str(log)])
         assert rc == 0

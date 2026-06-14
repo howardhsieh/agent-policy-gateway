@@ -35,6 +35,7 @@ non-JSONL sinks (databases, queues) without touching this module.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import hashlib
 import json
 import os
@@ -54,6 +55,7 @@ __all__ = [
     "ChainVerifyResult",
     "JsonlAuditWriter",
     "audit_stats_dict",
+    "filter_by_tool",
     "filter_by_verdict",
     "format_record",
     "read_audit",
@@ -444,6 +446,39 @@ def filter_by_time(
             continue
         out.append(r)
     return out
+
+
+# --- tool-name filter (R35) ---------------------------------------------------
+
+
+def filter_by_tool(
+    records: Iterable[AuditRecord],
+    patterns: Iterable[str] | None,
+) -> list[AuditRecord]:
+    """Return only the records whose ``call.tool_name`` matches ``patterns``.
+
+    Each pattern is an :func:`fnmatch.fnmatchcase` glob (``*``, ``?``, ``[seq]``);
+    a record is kept when its tool name matches *any* pattern (union). A literal
+    pattern with no wildcards therefore selects an exact tool name. Matching is
+    case-sensitive (``fnmatchcase``), mirroring the exactness of
+    :func:`filter_by_verdict`. A falsy ``patterns`` value (``None`` or an empty
+    collection) means "no filter" and returns every record unchanged.
+
+    Pure (no I/O), mirroring :func:`filter_by_verdict` / :func:`filter_by_time`,
+    so the ``apg audit stats --tool`` subcommand can apply it before handing the
+    subset to either renderer. The result preserves input order and is
+    materialized into a list so callers can summarize it more than once. A set
+    of patterns that matches nothing yields an empty list, which both renderers
+    treat as an empty log.
+    """
+    if not patterns:
+        return list(records)
+    pats = list(patterns)
+    return [
+        r
+        for r in records
+        if any(fnmatch.fnmatchcase(r.call.tool_name, p) for p in pats)
+    ]
 
 
 # --- audit stats summary (R29) ------------------------------------------------
