@@ -61,6 +61,7 @@ import sys
 from agent_policy_gateway.audit import (
     AuditFormatError,
     audit_stats_dict,
+    filter_by_agent,
     filter_by_time,
     filter_by_tool,
     filter_by_verdict,
@@ -563,6 +564,11 @@ def _cmd_audit_stats(args: argparse.Namespace) -> int:
     # fnmatch). Applied before either renderer so every figure reflects the
     # subset; composes with --verdict/--since/--until. None means no filter.
     records = filter_by_tool(records, args.tool)
+    # R36: narrow to records whose agent_id matches any --agent glob (union,
+    # fnmatch), mirroring --tool. The unattributed bucket (no agent_id) is
+    # selectable via the literal sentinel pattern. None means no filter;
+    # composes with --verdict/--since/--until/--tool.
+    records = filter_by_agent(records, args.agent)
     if args.json:
         stats = audit_stats_dict(records, source=source, top_n=args.top)
         print(json.dumps(stats, indent=2))
@@ -782,6 +788,20 @@ def _build_parser() -> argparse.ArgumentParser:
             "Only summarize records whose tool name matches this fnmatch glob "
             "(e.g. --tool 'send_*'). Repeatable to union several patterns; a "
             "literal name selects an exact match; omit to summarize all tools."
+        ),
+    )
+    stats_p.add_argument(
+        "--agent",
+        action="append",
+        default=None,
+        metavar="GLOB",
+        help=(
+            "Only summarize records whose agent id matches this fnmatch glob "
+            "(e.g. --agent 'svc.*'). Repeatable to union several patterns; a "
+            "literal id selects an exact match. Select unattributed traffic "
+            "(records with no agent_id) with the sentinel "
+            "--agent '(unattributed - no agent_id)'. Omit to summarize all "
+            "agents."
         ),
     )
     stats_p.set_defaults(func=_cmd_audit_stats)

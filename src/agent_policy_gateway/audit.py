@@ -55,6 +55,7 @@ __all__ = [
     "ChainVerifyResult",
     "JsonlAuditWriter",
     "audit_stats_dict",
+    "filter_by_agent",
     "filter_by_tool",
     "filter_by_verdict",
     "format_record",
@@ -478,6 +479,41 @@ def filter_by_tool(
         r
         for r in records
         if any(fnmatch.fnmatchcase(r.call.tool_name, p) for p in pats)
+    ]
+
+
+def filter_by_agent(
+    records: Iterable[AuditRecord],
+    patterns: Iterable[str] | None,
+) -> list[AuditRecord]:
+    """Return only the records whose ``call.agent_id`` matches ``patterns``.
+
+    Mirrors :func:`filter_by_tool` (R35): each pattern is an
+    :func:`fnmatch.fnmatchcase` glob (``*``, ``?``, ``[seq]``) and a record is
+    kept when its agent id matches *any* pattern (union); a literal pattern
+    with no wildcards selects an exact id. Matching is case-sensitive. A falsy
+    ``patterns`` value (``None`` or an empty collection) means "no filter" and
+    returns every record unchanged.
+
+    Records that carry no ``agent_id`` (the unattributed bucket) are matched
+    under the :data:`_NO_AGENT` sentinel label, reusing the R33 semantics from
+    the agent breakdown. Callers therefore select unattributed traffic with an
+    explicit ``filter_by_agent(records, [_NO_AGENT])`` (the CLI surfaces the
+    literal sentinel string in ``--help``).
+
+    Pure (no I/O), order-preserving, and materialized into a list so callers
+    can summarize the subset more than once. A pattern set that matches
+    nothing yields an empty list, which both renderers treat as an empty log.
+    """
+    if not patterns:
+        return list(records)
+    pats = list(patterns)
+    return [
+        r
+        for r in records
+        if any(
+            fnmatch.fnmatchcase(r.call.agent_id or _NO_AGENT, p) for p in pats
+        )
     ]
 
 

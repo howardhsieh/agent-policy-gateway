@@ -17,12 +17,14 @@ import pytest
 
 from agent_policy_gateway import (
     audit_stats_dict,
+    filter_by_agent,
     filter_by_time,
     filter_by_tool,
     filter_by_verdict,
     summarize_audit,
 )
 from agent_policy_gateway.audit import (
+    _NO_AGENT,
     AuditRecord,
     JsonlAuditWriter,
     read_audit,
@@ -934,6 +936,161 @@ class TestAuditStatsToolCli:
         assert "(log is empty - no records to summarize)" in out
 
     def test_no_tool_matches_all(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        rc, out, err = _run(["audit", "stats", str(log)])
+        assert rc == 0
+        assert "records:     4" in out
+
+
+class TestFilterByAgent:
+    """Pure ``filter_by_agent`` helper: fnmatch globs over ``call.agent_id``."""
+
+    def _records(self) -> list[AuditRecord]:
+        # agent ids include the unattributed (None) bucket.
+        agents: list[str | None] = ["svc.mailer", "svc.crawler", "user.alice", None]
+        return [
+            AuditRecord(
+                ts="2026-06-08T00:00:00.000000Z",
+                call=ToolCall(tool_name="t", agent_id=aid),
+                decision=Decision(verdict=Verdict.ALLOW, rule_id=None),
+            )
+            for aid in agents
+        ]
+
+    def test_no_filter_returns_all_unchanged(self) -> None:
+        recs = self._records()
+        assert filter_by_agent(recs, None) == recs
+
+    def test_empty_patterns_returns_all_unchanged(self) -> None:
+        recs = self._records()
+        assert filter_by_agent(recs, []) == recs
+
+    def test_single_glob_matches_prefix(self) -> None:
+        recs = self._records()
+        out = filter_by_agent(recs, ["svc.*"])
+        assert [r.call.agent_id for r in out] == ["svc.mailer", "svc.crawler"]
+
+    def test_literal_pattern_is_exact_match(self) -> None:
+        recs = self._records()
+        out = filter_by_agent(recs, ["user.alice"])
+        assert [r.call.agent_id for r in out] == ["user.alice"]
+
+    def test_multi_pattern_union(self) -> None:
+        recs = self._records()
+        out = filter_by_agent(recs, ["user.alice", "svc.crawler"])
+        assert [r.call.agent_id for r in out] == ["svc.crawler", "user.alice"]
+
+    def test_unattributed_bucket_selected_by_sentinel(self) -> None:
+        recs = self._records()
+        out = filter_by_agent(recs, [_NO_AGENT])
+        assert [r.call.agent_id for r in out] == [None]
+
+    def test_sentinel_composes_with_named_agent(self) -> None:
+        recs = self._records()
+        out = filter_by_agent(recs, ["user.alice", _NO_AGENT])
+        assert [r.call.agent_id for r in out] == ["user.alice", None]
+
+    def test_no_match_is_empty(self) -> None:
+        recs = self._records()
+        assert filter_by_agent(recs, ["nope.*"]) == []
+
+    def test_matching_is_case_sensitive(self) -> None:
+        recs = self._records()
+        assert filter_by_agent(recs, ["SVC.*"]) == []
+
+    def test_preserves_order(self) -> None:
+        recs = self._records()
+        out = filter_by_agent(recs, ["*"])
+        # "*" matches every named agent; the None bucket maps to the sentinel
+        # label, which "*" also matches, so all records pass through unchanged.
+        assert out == recs
+
+
+class TestAuditStatsAgentCli:
+    """``apg audit stats --agent`` over a real JSONL log."""
+
+    def _log(self, path: Path) -> Path:
+        rows: list[tuple[str, Verdict, str | None]] = [
+            ("send_email", Verdict.DENY, "deny"),
+            ("web_fetch", Verdict.ALLOW, None),
+            ("kb_lookup", Verdict.ALLOW, "allow"),
+            ("send_email", Verdict.REVIEW, "review"),
+        ]
+        agents: list[str | None] = ["svc.mailer", None, "user.alice", "svc.mailer"]
+        writer = JsonlAuditWriter(path, clock=_clock())
+        with writer:
+            for (tool, verdict, rule), aid in zip(rows, agents, strict=True):
+                writer(
+                    ToolCall(tool_name=tool, agent_id=aid),
+                    Decision(verdict=verdict, rule_id=rule),
+                )
+        return path
+
+    def test_glob_filters_text(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        rc, out, err = _run(["audit", "stats", str(log), "--agent", "svc.*"])
+        assert rc == 0
+        assert "records:     2" in out
+
+    def test_glob_filters_json(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        rc, out, err = _run(
+            ["audit", "stats", str(log), "--json", "--agent", "svc.mailer"]
+        )
+        assert rc == 0
+        data = json.loads(out)
+        assert data["records"] == 2
+        assert data["verdicts"]["deny"]["count"] == 1
+        assert data["verdicts"]["review"]["count"] == 1
+
+    def test_repeatable_agent_unions(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        rc, out, err = _run(
+            [
+                "audit", "stats", str(log), "--json",
+                "--agent", "user.alice", "--agent", "svc.mailer",
+            ]
+        )
+        assert rc == 0
+        data = json.loads(out)
+        assert data["records"] == 3
+
+    def test_sentinel_selects_unattributed(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        rc, out, err = _run(
+            [
+                "audit", "stats", str(log), "--json",
+                "--agent", _NO_AGENT,
+            ]
+        )
+        assert rc == 0
+        data = json.loads(out)
+        assert data["records"] == 1
+        assert data["verdicts"]["allow"]["count"] == 1
+
+    def test_composes_with_tool(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        # svc.mailer has the two send_email rows; --tool send_* keeps both,
+        # --verdict deny narrows to one.
+        rc, out, err = _run(
+            [
+                "audit", "stats", str(log), "--json",
+                "--agent", "svc.mailer", "--tool", "send_*", "--verdict", "deny",
+            ]
+        )
+        assert rc == 0
+        data = json.loads(out)
+        assert data["records"] == 1
+        assert data["verdicts"]["deny"]["count"] == 1
+
+    def test_no_match_is_empty_log(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        rc, out, err = _run(["audit", "stats", str(log), "--agent", "nope.*"])
+        assert rc == 0
+        assert "records:     0" in out
+        assert "(log is empty - no records to summarize)" in out
+
+    def test_no_agent_matches_all(self, tmp_path: Path) -> None:
         log = self._log(tmp_path / "t.jsonl")
         rc, out, err = _run(["audit", "stats", str(log)])
         assert rc == 0
