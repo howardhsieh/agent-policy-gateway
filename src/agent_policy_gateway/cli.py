@@ -60,6 +60,7 @@ import sys
 
 from agent_policy_gateway.audit import (
     AuditFormatError,
+    AuditRecord,
     audit_stats_dict,
     filter_by_agent,
     filter_by_time,
@@ -531,27 +532,61 @@ def _cmd_lint(args: argparse.Namespace) -> int:
 # --- ``apg audit stats`` (R29) -------------------------------------------------
 
 
+def _stats_source_label(paths: list[str]) -> str:
+    """Render the ``source`` label for one or more audit logs (R37).
+
+    A single path keeps its exact spelling, so single-file output is byte-for-
+    byte unchanged. Up to four paths are comma-joined in argument order; beyond
+    that the label collapses to ``"<n> logs"`` to keep the header one line.
+    """
+    if len(paths) == 1:
+        return paths[0]
+    if len(paths) <= 4:
+        return ", ".join(paths)
+    return f"{len(paths)} logs"
+
+
 def _cmd_audit_stats(args: argparse.Namespace) -> int:
-    """Summarize a JSONL audit log. Exit codes mirror ``apg-replay``:
-    ``0`` ok, ``2`` missing file, ``3`` malformed log line."""
+    """Summarize one or more JSONL audit logs. Exit codes mirror ``apg-replay``:
+    ``0`` ok, ``2`` missing file (or ``-`` mixed with paths), ``3`` malformed
+    log line. Multiple logs (R37) are summarized as their concatenation in
+    argument order."""
     # R32: ``-`` reads the JSONL log from stdin (pipe support); the source label
     # in the summary becomes ``<stdin>`` and a missing-file (exit 2) is
     # impossible because nothing is opened. Any other value is a path.
-    if args.log == "-":
+    # R37: ``log`` is now one-or-more positionals (argparse nargs="+"), so
+    # ``args.log`` is always a list. Several paths are summarized as the
+    # concatenation of their records in argument order; the per-source filters
+    # below then apply to the union. ``-`` (stdin, R32) stays a single-source
+    # shorthand and may not be mixed with file paths.
+    logs: list[str] = args.log
+    if "-" in logs and len(logs) > 1:
+        print(
+            "apg: '-' (stdin) cannot be combined with file paths",
+            file=sys.stderr,
+        )
+        return 2
+    if logs == ["-"]:
         source = "<stdin>"
-        reader = read_audit_stdin()
-    else:
-        source = args.log
         try:
-            reader = read_audit(args.log)
-        except FileNotFoundError:
-            print(f"apg: audit log not found: {args.log}", file=sys.stderr)
-            return 2
-    try:
-        records = list(reader)
-    except AuditFormatError as exc:
-        print(f"apg: {exc}", file=sys.stderr)
-        return 3
+            records: list[AuditRecord] = list(read_audit_stdin())
+        except AuditFormatError as exc:
+            print(f"apg: {exc}", file=sys.stderr)
+            return 3
+    else:
+        records = []
+        for path in logs:
+            try:
+                reader = read_audit(path)
+            except FileNotFoundError:
+                print(f"apg: audit log not found: {path}", file=sys.stderr)
+                return 2
+            try:
+                records.extend(reader)
+            except AuditFormatError as exc:
+                print(f"apg: {exc}", file=sys.stderr)
+                return 3
+        source = _stats_source_label(logs)
     # R31: restrict the summary to the requested verdict(s) before either
     # renderer runs, so the record count, span, top-rules and top-tools all
     # reflect the subset. ``None`` (no --verdict) leaves the records untouched.
@@ -727,15 +762,23 @@ def _build_parser() -> argparse.ArgumentParser:
         "stats",
         help="Print a one-screen summary of a JSONL audit log.",
         description=(
-            "Summarize a JSONL audit log: total record count, first/last "
-            "timestamp, counts by verdict, the deny+review share, and the top "
-            "rules and tools by hit count. Exits 0 on success, 2 if the file "
-            "is missing, 3 if a log line is malformed."
+            "Summarize one or more JSONL audit logs: total record count, "
+            "first/last timestamp, counts by verdict, the deny+review share, "
+            "and the top rules and tools by hit count. Several logs are "
+            "summarized as their concatenation in argument order. Exits 0 on "
+            "success, 2 if a file is missing (or '-' is mixed with paths), 3 "
+            "if a log line is malformed."
         ),
     )
     stats_p.add_argument(
         "log",
-        help="Path to the JSONL audit log file, or '-' to read from stdin.",
+        nargs="+",
+        metavar="log",
+        help=(
+            "Path(s) to JSONL audit log file(s). Several are summarized as the "
+            "concatenation of their records in argument order. '-' reads a "
+            "single log from stdin and may not be combined with file paths."
+        ),
     )
     stats_p.add_argument(
         "--top",

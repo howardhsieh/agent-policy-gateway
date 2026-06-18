@@ -1097,5 +1097,165 @@ class TestAuditStatsAgentCli:
         assert "records:     4" in out
 
 
+# --- R37: union of several logs (``apg audit stats a.jsonl b.jsonl``) ---------
+
+
+class TestAuditStatsMultiLog:
+    """``stats`` accepts >1 ``log`` positional and summarizes their union."""
+
+    def test_two_files_record_count_is_the_sum(self, tmp_path: Path) -> None:
+        a = _write_log(
+            tmp_path / "a.jsonl",
+            [
+                ("web_fetch", Verdict.ALLOW, None),
+                ("send_email", Verdict.DENY, "deny-web-to-email"),
+            ],
+        )
+        b = _write_log(
+            tmp_path / "b.jsonl",
+            [("send_email", Verdict.DENY, "deny-web-to-email")],
+        )
+        rc, out, err = _run(["audit", "stats", str(a), str(b), "--json"])
+        assert rc == 0
+        data = json.loads(out)
+        assert data["records"] == 3
+        assert data["verdicts"]["deny"]["count"] == 2
+        assert data["verdicts"]["allow"]["count"] == 1
+
+    def test_union_span_spans_both_logs(self, tmp_path: Path) -> None:
+        # Each ``_write_log`` uses its own clock starting at 00:00:00, so the
+        # two files share the same timestamp range; build distinct ranges by
+        # hand so the union span is provably wider than either file alone.
+        early = tmp_path / "early.jsonl"
+        late = tmp_path / "late.jsonl"
+        writer = JsonlAuditWriter(early, clock=lambda: "2026-06-01T00:00:00.000000Z")
+        with writer:
+            writer(
+                ToolCall(tool_name="web_fetch", agent_id="a"),
+                Decision(verdict=Verdict.ALLOW, rule_id=None),
+            )
+        writer = JsonlAuditWriter(late, clock=lambda: "2026-06-30T23:59:59.000000Z")
+        with writer:
+            writer(
+                ToolCall(tool_name="send_email", agent_id="a"),
+                Decision(verdict=Verdict.DENY, rule_id="r"),
+            )
+        rc, out, err = _run(["audit", "stats", str(early), str(late), "--json"])
+        assert rc == 0
+        span = json.loads(out)["span"]
+        assert span["first"] == "2026-06-01T00:00:00.000000Z"
+        assert span["last"] == "2026-06-30T23:59:59.000000Z"
+
+    def test_records_read_in_argument_order(self, tmp_path: Path) -> None:
+        # Argument order, not file name, decides concatenation order. The text
+        # span uses min/max so it is order-insensitive; assert union size and
+        # that swapping order yields an identical summary body.
+        a = _write_log(tmp_path / "a.jsonl", [("t1", Verdict.ALLOW, None)])
+        b = _write_log(tmp_path / "b.jsonl", [("t2", Verdict.DENY, "r")])
+        rc1, out1, _ = _run(["audit", "stats", str(a), str(b), "--json"])
+        rc2, out2, _ = _run(["audit", "stats", str(b), str(a), "--json"])
+        assert rc1 == 0 and rc2 == 0
+        d1, d2 = json.loads(out1), json.loads(out2)
+        assert d1["records"] == d2["records"] == 2
+
+    def test_source_label_is_comma_joined(self, tmp_path: Path) -> None:
+        a = _write_log(tmp_path / "a.jsonl", [("t", Verdict.ALLOW, None)])
+        b = _write_log(tmp_path / "b.jsonl", [("t", Verdict.ALLOW, None)])
+        rc, out, err = _run(["audit", "stats", str(a), str(b)])
+        assert rc == 0
+        assert out.splitlines()[0] == f"audit log summary: {a}, {b}"
+
+    def test_json_source_label_is_comma_joined(self, tmp_path: Path) -> None:
+        a = _write_log(tmp_path / "a.jsonl", [("t", Verdict.ALLOW, None)])
+        b = _write_log(tmp_path / "b.jsonl", [("t", Verdict.ALLOW, None)])
+        rc, out, err = _run(["audit", "stats", str(a), str(b), "--json"])
+        assert rc == 0
+        assert json.loads(out)["source"] == f"{a}, {b}"
+
+    def test_many_logs_collapse_to_n_logs_label(self, tmp_path: Path) -> None:
+        logs = [
+            str(_write_log(tmp_path / f"l{i}.jsonl", [("t", Verdict.ALLOW, None)]))
+            for i in range(5)
+        ]
+        rc, out, err = _run(["audit", "stats", *logs, "--json"])
+        assert rc == 0
+        data = json.loads(out)
+        assert data["source"] == "5 logs"
+        assert data["records"] == 5
+
+    def test_single_file_behavior_unchanged(self, tmp_path: Path) -> None:
+        # One positional must summarize byte-for-byte as before R37: the source
+        # label is the bare path, not a one-element joined list.
+        log = _write_log(
+            tmp_path / "a.jsonl",
+            [("web_fetch", Verdict.ALLOW, None)],
+        )
+        rc, out, err = _run(["audit", "stats", str(log)])
+        assert rc == 0
+        assert out.splitlines()[0] == f"audit log summary: {log}"
+
+    def test_filters_apply_to_the_union(self, tmp_path: Path) -> None:
+        a = _write_log(
+            tmp_path / "a.jsonl",
+            [
+                ("web_fetch", Verdict.ALLOW, None),
+                ("send_email", Verdict.DENY, "r"),
+            ],
+        )
+        b = _write_log(
+            tmp_path / "b.jsonl",
+            [("send_email", Verdict.DENY, "r")],
+        )
+        rc, out, err = _run(
+            ["audit", "stats", str(a), str(b), "--verdict", "deny", "--json"]
+        )
+        assert rc == 0
+        assert json.loads(out)["records"] == 2
+
+    def test_missing_file_among_several_exits_2_naming_it(
+        self, tmp_path: Path
+    ) -> None:
+        a = _write_log(tmp_path / "a.jsonl", [("t", Verdict.ALLOW, None)])
+        missing = tmp_path / "gone.jsonl"
+        rc, out, err = _run(["audit", "stats", str(a), str(missing)])
+        assert rc == 2
+        assert "gone.jsonl" in err
+        assert "not found" in err
+
+    def test_dash_mixed_with_path_exits_2(self, tmp_path: Path) -> None:
+        a = _write_log(tmp_path / "a.jsonl", [("t", Verdict.ALLOW, None)])
+        rc, out, err = _run(["audit", "stats", "-", str(a)])
+        assert rc == 2
+        assert "-" in err and "cannot be combined" in err
+
+    def test_dash_after_path_also_exits_2(self, tmp_path: Path) -> None:
+        a = _write_log(tmp_path / "a.jsonl", [("t", Verdict.ALLOW, None)])
+        rc, out, err = _run(["audit", "stats", str(a), "-"])
+        assert rc == 2
+        assert "cannot be combined" in err
+
+    def test_malformed_line_in_second_log_exits_3(self, tmp_path: Path) -> None:
+        a = _write_log(tmp_path / "a.jsonl", [("t", Verdict.ALLOW, None)])
+        bad = tmp_path / "bad.jsonl"
+        bad.write_text("{ not json }\n")
+        rc, out, err = _run(["audit", "stats", str(a), str(bad)])
+        assert rc == 3
+        assert "line 1" in err
+
+    def test_single_dash_still_reads_stdin(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        log = _write_log(
+            tmp_path / "a.jsonl",
+            [("send_email", Verdict.DENY, "r"), ("web_fetch", Verdict.ALLOW, None)],
+        )
+        monkeypatch.setattr("sys.stdin", io.StringIO(log.read_text()))
+        rc, out, err = _run(["audit", "stats", "-", "--json"])
+        assert rc == 0
+        data = json.loads(out)
+        assert data["source"] == "<stdin>"
+        assert data["records"] == 2
+
+
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-v"]))
