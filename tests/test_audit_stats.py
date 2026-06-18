@@ -1259,3 +1259,110 @@ class TestAuditStatsMultiLog:
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+# --- R38: per-list top-N overrides -------------------------------------------
+
+
+def _distinct_records(n: int) -> list[AuditRecord]:
+    """``n`` ALLOW records, each with a unique rule/tool/agent name.
+
+    Names are zero-padded (``r00`` < ``r01`` < ...) so every count is 1 and the
+    deterministic tie-break (name ascending) makes the top-K lists exactly the
+    first K names. This lets a per-list cap be asserted independently.
+    """
+    clock = _clock()
+    return [
+        AuditRecord(
+            ts=clock(),
+            call=ToolCall(tool_name=f"t{i:02d}", agent_id=f"a{i:02d}"),
+            decision=Decision(verdict=Verdict.ALLOW, rule_id=f"r{i:02d}"),
+        )
+        for i in range(n)
+    ]
+
+
+class TestPerListTopOverridesSummary:
+    def test_per_list_caps_apply_independently(self) -> None:
+        lines = summarize_audit(
+            _distinct_records(8), top_n=5, top_rules=2, top_tools=3, top_agents=4
+        )
+        text = "\n".join(lines)
+        assert "top rules (by hits, max 2):" in text
+        assert "top tools (by hits, max 3):" in text
+        assert "top agents (by hits, max 4):" in text
+        assert sum(f"  r{i:02d}" in text for i in range(8)) == 2
+        assert sum(f"  t{i:02d}" in text for i in range(8)) == 3
+        assert sum(f"  a{i:02d}" in text for i in range(8)) == 4
+
+    def test_override_one_list_leaves_others_on_top_n(self) -> None:
+        lines = summarize_audit(_distinct_records(8), top_n=3, top_agents=6)
+        text = "\n".join(lines)
+        assert "top rules (by hits, max 3):" in text
+        assert "top tools (by hits, max 3):" in text
+        assert "top agents (by hits, max 6):" in text
+        assert sum(f"  r{i:02d}" in text for i in range(8)) == 3
+        assert sum(f"  t{i:02d}" in text for i in range(8)) == 3
+        assert sum(f"  a{i:02d}" in text for i in range(8)) == 6
+
+    def test_omitting_all_three_is_byte_for_byte_unchanged(self) -> None:
+        recs = _distinct_records(8)
+        assert summarize_audit(recs, top_n=4) == summarize_audit(
+            recs, top_n=4, top_rules=None, top_tools=None, top_agents=None
+        )
+
+
+class TestPerListTopOverridesDict:
+    def test_per_list_caps_apply_independently(self) -> None:
+        d = audit_stats_dict(
+            _distinct_records(8), top_n=5, top_rules=2, top_tools=3, top_agents=4
+        )
+        assert len(d["top_rules"]) == 2
+        assert len(d["top_tools"]) == 3
+        assert len(d["top_agents"]) == 4
+
+    def test_override_falls_back_to_top_n_when_omitted(self) -> None:
+        d = audit_stats_dict(_distinct_records(8), top_n=3, top_tools=7)
+        assert len(d["top_rules"]) == 3
+        assert len(d["top_tools"]) == 7
+        assert len(d["top_agents"]) == 3
+
+    def test_omitting_all_three_is_unchanged(self) -> None:
+        recs = _distinct_records(8)
+        assert audit_stats_dict(recs, top_n=4) == audit_stats_dict(
+            recs, top_n=4, top_rules=None, top_tools=None, top_agents=None
+        )
+
+
+class TestPerListTopOverridesCli:
+    def _log(self, tmp_path: Path) -> Path:
+        log = tmp_path / "many.jsonl"
+        writer = JsonlAuditWriter(log, clock=_clock())
+        with writer:
+            for i in range(8):
+                writer(
+                    ToolCall(tool_name=f"t{i:02d}", agent_id=f"a{i:02d}"),
+                    Decision(verdict=Verdict.ALLOW, rule_id=f"r{i:02d}"),
+                )
+        return log
+
+    def test_text_top_with_agent_override(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path)
+        rc, out, _ = _run(
+            ["audit", "stats", str(log), "--top", "3", "--top-agents", "10"]
+        )
+        assert rc == 0
+        assert sum(f"  r{i:02d}" in out for i in range(8)) == 3
+        assert sum(f"  t{i:02d}" in out for i in range(8)) == 3
+        assert sum(f"  a{i:02d}" in out for i in range(8)) == 8  # capped at 10, 8 exist
+
+    def test_json_top_with_agent_override(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path)
+        rc, out, _ = _run(
+            ["audit", "stats", str(log), "--json", "--top", "3", "--top-agents", "10"]
+        )
+        assert rc == 0
+        d = json.loads(out)
+        assert len(d["top_rules"]) == 3
+        assert len(d["top_tools"]) == 3
+        assert len(d["top_agents"]) == 8

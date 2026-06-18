@@ -605,10 +605,24 @@ def _cmd_audit_stats(args: argparse.Namespace) -> int:
     # composes with --verdict/--since/--until/--tool.
     records = filter_by_agent(records, args.agent)
     if args.json:
-        stats = audit_stats_dict(records, source=source, top_n=args.top)
+        stats = audit_stats_dict(
+            records,
+            source=source,
+            top_n=args.top,
+            top_rules=args.top_rules,
+            top_tools=args.top_tools,
+            top_agents=args.top_agents,
+        )
         print(json.dumps(stats, indent=2))
         return 0
-    for line in summarize_audit(records, source=source, top_n=args.top):
+    for line in summarize_audit(
+        records,
+        source=source,
+        top_n=args.top,
+        top_rules=args.top_rules,
+        top_tools=args.top_tools,
+        top_agents=args.top_agents,
+    ):
         print(line)
     return 0
 
@@ -786,6 +800,36 @@ def _build_parser() -> argparse.ArgumentParser:
         default=5,
         metavar="N",
         help="Show the top N rules and tools by hit count (default 5).",
+    )
+    stats_p.add_argument(
+        "--top-rules",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Cap the top-rules list at N, overriding --top for this list only "
+            "(defaults to --top when omitted)."
+        ),
+    )
+    stats_p.add_argument(
+        "--top-tools",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Cap the top-tools list at N, overriding --top for this list only "
+            "(defaults to --top when omitted)."
+        ),
+    )
+    stats_p.add_argument(
+        "--top-agents",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Cap the top-agents list at N, overriding --top for this list only "
+            "(defaults to --top when omitted)."
+        ),
     )
     stats_p.add_argument(
         "--json",

@@ -547,6 +547,9 @@ def summarize_audit(
     *,
     source: str | None = None,
     top_n: int = 5,
+    top_rules: int | None = None,
+    top_tools: int | None = None,
+    top_agents: int | None = None,
 ) -> list[str]:
     """Render a one-screen plain-text summary of an audit log as lines.
 
@@ -564,6 +567,11 @@ def summarize_audit(
     """
     recs = list(records)
     total = len(recs)
+    # R38: each list may cap independently; an omitted per-list cap falls back
+    # to the shared ``top_n`` so omitting all three is byte-for-byte unchanged.
+    rules_n = top_n if top_rules is None else top_rules
+    tools_n = top_n if top_tools is None else top_tools
+    agents_n = top_n if top_agents is None else top_agents
     lines: list[str] = []
     header = "audit log summary"
     if source is not None:
@@ -590,20 +598,20 @@ def summarize_audit(
     rule_counts: Counter[str] = Counter(
         r.decision.rule_id if r.decision.rule_id else _NO_RULE for r in recs
     )
-    lines.append(f"top rules (by hits, max {top_n}):")
-    for name, count in _top(rule_counts, top_n):
+    lines.append(f"top rules (by hits, max {rules_n}):")
+    for name, count in _top(rule_counts, rules_n):
         lines.append(f"  {count:>5d}  {name}")
 
     tool_counts: Counter[str] = Counter(r.call.tool_name for r in recs)
-    lines.append(f"top tools (by hits, max {top_n}):")
-    for name, count in _top(tool_counts, top_n):
+    lines.append(f"top tools (by hits, max {tools_n}):")
+    for name, count in _top(tool_counts, tools_n):
         lines.append(f"  {count:>5d}  {name}")
 
     agent_counts: Counter[str] = Counter(
         r.call.agent_id if r.call.agent_id else _NO_AGENT for r in recs
     )
-    lines.append(f"top agents (by hits, max {top_n}):")
-    for name, count in _top(agent_counts, top_n):
+    lines.append(f"top agents (by hits, max {agents_n}):")
+    for name, count in _top(agent_counts, agents_n):
         lines.append(f"  {count:>5d}  {name}")
     return lines
 
@@ -613,6 +621,9 @@ def audit_stats_dict(
     *,
     source: str | None = None,
     top_n: int = 5,
+    top_rules: int | None = None,
+    top_tools: int | None = None,
+    top_agents: int | None = None,
 ) -> dict[str, Any]:
     """Return the audit-log statistics as a JSON-serializable dict.
 
@@ -631,6 +642,11 @@ def audit_stats_dict(
     """
     recs = list(records)
     total = len(recs)
+    # R38: per-list caps fall back to the shared ``top_n`` when omitted, so the
+    # default output is unchanged.
+    rules_n = top_n if top_rules is None else top_rules
+    tools_n = top_n if top_tools is None else top_tools
+    agents_n = top_n if top_agents is None else top_agents
     result: dict[str, Any] = {}
     if source is not None:
         result["source"] = source
@@ -658,19 +674,19 @@ def audit_stats_dict(
         r.decision.rule_id if r.decision.rule_id else _NO_RULE for r in recs
     )
     result["top_rules"] = [
-        {"name": name, "count": count} for name, count in _top(rule_counts, top_n)
+        {"name": name, "count": count} for name, count in _top(rule_counts, rules_n)
     ]
 
     tool_counts: Counter[str] = Counter(r.call.tool_name for r in recs)
     result["top_tools"] = [
-        {"name": name, "count": count} for name, count in _top(tool_counts, top_n)
+        {"name": name, "count": count} for name, count in _top(tool_counts, tools_n)
     ]
 
     agent_counts: Counter[str] = Counter(
         r.call.agent_id if r.call.agent_id else _NO_AGENT for r in recs
     )
     result["top_agents"] = [
-        {"name": name, "count": count} for name, count in _top(agent_counts, top_n)
+        {"name": name, "count": count} for name, count in _top(agent_counts, agents_n)
     ]
     return result
 
