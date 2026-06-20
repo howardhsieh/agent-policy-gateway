@@ -55,6 +55,7 @@ __all__ = [
     "ChainVerifyResult",
     "JsonlAuditWriter",
     "audit_flagged_share",
+    "audit_stats_csv",
     "audit_stats_dict",
     "filter_by_agent",
     "filter_by_tool",
@@ -715,6 +716,52 @@ def audit_stats_dict(
         {"name": name, "count": count} for name, count in _top(agent_counts, agents_n)
     ]
     return result
+
+
+def audit_stats_csv(
+    records: Iterable[AuditRecord],
+    *,
+    source: str | None = None,
+) -> list[str]:
+    """Return the per-verdict counts and percentages as CSV rows.
+
+    The CSV counterpart to :func:`summarize_audit` / :func:`audit_stats_dict`,
+    intended for piping into a spreadsheet (``apg audit stats --csv``). The
+    output is a ``verdict,count,pct`` header followed by one row per verdict in
+    :class:`Verdict` enum order (always all four, even when a verdict has zero
+    hits) and a trailing ``deny+review`` row combining the flagged verdicts.
+    Counts and percentages match the text and JSON renderers: percentages are
+    one-decimal strings produced by the shared :func:`_pct` helper.
+
+    Like :func:`summarize_audit` / :func:`audit_stats_dict`, this performs no
+    I/O so callers (the ``apg audit stats --csv`` subcommand and tests) can
+    drive it directly. ``source`` is accepted for signature parity with the
+    sibling renderers but does not appear in the CSV body. An empty log yields
+    just the header row, paralleling the empty-log shortcut of the text and
+    JSON renderers.
+
+    The emitted fields never contain commas or quotes (verdict names are bare
+    identifiers, the combined row is the literal ``deny+review``), so the rows
+    are valid CSV without any quoting.
+    """
+    del source  # parity with sibling renderers; not part of the CSV body
+    recs = list(records)
+    total = len(recs)
+    header = "verdict,count,pct"
+    if total == 0:
+        return [header]
+
+    verdict_counts: Counter[Verdict] = Counter(r.decision.verdict for r in recs)
+    lines = [header]
+    for verdict in Verdict:
+        count = verdict_counts.get(verdict, 0)
+        lines.append(f"{verdict.value},{count},{_pct(count, total)}")
+    flagged = verdict_counts.get(Verdict.DENY, 0) + verdict_counts.get(
+        Verdict.REVIEW, 0
+    )
+    lines.append(f"deny+review,{flagged},{_pct(flagged, total)}")
+    return lines
+
 
 
 # --- replay CLI ---------------------------------------------------------------

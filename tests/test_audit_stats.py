@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from agent_policy_gateway import (
+    audit_stats_csv,
     audit_stats_dict,
     filter_by_agent,
     filter_by_time,
@@ -1473,3 +1474,115 @@ class TestFailOverGate:
             ["audit", "stats", str(log), "--verdict", "deny", "--fail-over", "99"]
         )
         assert rc == 5
+
+
+# --- audit_stats_csv (pure) + --csv CLI path (R40) ----------------------------
+
+
+def _flagged_csv_log(path: Path) -> Path:
+    """Log with 2 allow, 2 deny, 1 review (mirrors _mixed_records shares)."""
+    return _write_log(
+        path,
+        [
+            ("send_email", Verdict.DENY, "deny-web-to-email"),
+            ("send_email", Verdict.DENY, "deny-web-to-email"),
+            ("web_fetch", Verdict.ALLOW, None),
+            ("kb_lookup", Verdict.ALLOW, "allow-internal-readers"),
+            ("send_email", Verdict.REVIEW, "review-pii-egress"),
+        ],
+    )
+
+
+class TestAuditStatsCsv:
+    def test_empty_log_yields_only_header(self) -> None:
+        assert audit_stats_csv([]) == ["verdict,count,pct"]
+
+    def test_source_does_not_appear_in_body(self) -> None:
+        # source is accepted for parity but never rendered into the CSV.
+        assert audit_stats_csv([], source="x.jsonl") == ["verdict,count,pct"]
+
+    def test_header_then_one_row_per_verdict_in_enum_order(self) -> None:
+        lines = audit_stats_csv(_mixed_records())
+        assert lines[0] == "verdict,count,pct"
+        verdict_cells = [line.split(",")[0] for line in lines[1:-1]]
+        assert verdict_cells == [v.value for v in Verdict]
+        assert verdict_cells == ["allow", "deny", "review", "redact"]
+
+    def test_counts_and_percentages_match_json_renderer(self) -> None:
+        recs = _mixed_records()
+        lines = audit_stats_csv(recs)
+        rows = {
+            line.split(",")[0]: line.split(",")[1:] for line in lines[1:]
+        }
+        assert rows["allow"] == ["2", "40.0"]
+        assert rows["deny"] == ["2", "40.0"]
+        assert rows["review"] == ["1", "20.0"]
+        assert rows["redact"] == ["0", "0.0"]
+
+    def test_trailing_deny_review_row(self) -> None:
+        lines = audit_stats_csv(_mixed_records())
+        assert lines[-1] == "deny+review,3,60.0"
+
+    def test_rows_match_audit_stats_dict(self) -> None:
+        recs = _mixed_records()
+        d = audit_stats_dict(recs)
+        lines = audit_stats_csv(recs)
+        for verdict in Verdict:
+            cells = next(
+                line for line in lines if line.startswith(f"{verdict.value},")
+            ).split(",")
+            assert int(cells[1]) == d["verdicts"][verdict.value]["count"]
+            assert float(cells[2]) == d["verdicts"][verdict.value]["pct"]
+        dr = lines[-1].split(",")
+        assert int(dr[1]) == d["deny_review"]["count"]
+        assert float(dr[2]) == d["deny_review"]["pct"]
+
+    def test_fields_have_no_commas_or_quotes(self) -> None:
+        # Every data row is exactly three comma-separated cells (valid CSV
+        # without quoting because no field embeds a comma).
+        for line in audit_stats_csv(_mixed_records()):
+            assert len(line.split(",")) == 3
+
+
+class TestAuditStatsCsvCli:
+    def test_csv_flag_emits_csv(self, tmp_path: Path) -> None:
+        log = _flagged_csv_log(tmp_path / "a.jsonl")
+        rc, out, err = _run(["audit", "stats", str(log), "--csv"])
+        assert rc == 0
+        assert err == ""
+        lines = out.splitlines()
+        assert lines[0] == "verdict,count,pct"
+        assert lines[1].startswith("allow,2,")
+        assert lines[-1] == "deny+review,3,60.0"
+
+    def test_csv_empty_log_prints_only_header(self, tmp_path: Path) -> None:
+        log = tmp_path / "empty.jsonl"
+        log.write_text("", encoding="utf-8")
+        rc, out, _ = _run(["audit", "stats", str(log), "--csv"])
+        assert rc == 0
+        assert out.splitlines() == ["verdict,count,pct"]
+
+    def test_csv_and_json_together_is_argparse_error_exit_2(
+        self, tmp_path: Path
+    ) -> None:
+        log = _flagged_csv_log(tmp_path / "a.jsonl")
+        with pytest.raises(SystemExit) as exc:
+            _run(["audit", "stats", str(log), "--csv", "--json"])
+        assert exc.value.code == 2
+
+    def test_csv_missing_file_exits_2(self, tmp_path: Path) -> None:
+        rc, out, err = _run(
+            ["audit", "stats", str(tmp_path / "nope.jsonl"), "--csv"]
+        )
+        assert rc == 2
+        assert out == ""
+
+    def test_csv_composes_with_fail_over_gate(self, tmp_path: Path) -> None:
+        log = _flagged_csv_log(tmp_path / "a.jsonl")
+        # flagged share is 60%, so a 40% threshold trips the gate (exit 5)
+        rc, out, _ = _run(
+            ["audit", "stats", str(log), "--csv", "--fail-over", "40"]
+        )
+        assert rc == 5
+        # the CSV is still printed before the gate fires
+        assert out.splitlines()[-1] == "deny+review,3,60.0"

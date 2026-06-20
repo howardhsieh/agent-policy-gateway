@@ -62,6 +62,7 @@ from agent_policy_gateway.audit import (
     AuditFormatError,
     AuditRecord,
     audit_flagged_share,
+    audit_stats_csv,
     audit_stats_dict,
     filter_by_agent,
     filter_by_time,
@@ -620,6 +621,10 @@ def _cmd_audit_stats(args: argparse.Namespace) -> int:
     # selectable via the literal sentinel pattern. None means no filter;
     # composes with --verdict/--since/--until/--tool.
     records = filter_by_agent(records, args.agent)
+    if args.csv:
+        for line in audit_stats_csv(records, source=source):
+            print(line)
+        return _fail_over_code(records, args.fail_over)
     if args.json:
         stats = audit_stats_dict(
             records,
@@ -847,10 +852,21 @@ def _build_parser() -> argparse.ArgumentParser:
             "(defaults to --top when omitted)."
         ),
     )
-    stats_p.add_argument(
+    fmt_group = stats_p.add_mutually_exclusive_group()
+    fmt_group.add_argument(
         "--json",
         action="store_true",
         help="Emit the summary as machine-readable JSON instead of text.",
+    )
+    fmt_group.add_argument(
+        "--csv",
+        action="store_true",
+        help=(
+            "Emit the per-verdict counts and percentages as CSV "
+            "(verdict,count,pct header, one row per verdict in enum order, "
+            "then a deny+review row) for piping into a spreadsheet. Mutually "
+            "exclusive with --json."
+        ),
     )
     stats_p.add_argument(
         "--verdict",
