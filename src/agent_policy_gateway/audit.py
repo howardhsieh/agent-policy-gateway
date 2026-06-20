@@ -54,6 +54,7 @@ __all__ = [
     "AuditRecord",
     "ChainVerifyResult",
     "JsonlAuditWriter",
+    "audit_flagged_share",
     "audit_stats_dict",
     "filter_by_agent",
     "filter_by_tool",
@@ -540,6 +541,31 @@ _NO_RULE = "(default - no rule)"
 #: Label used for tool calls that carried no ``agent_id`` (unattributed
 #: traffic rather than a named agent identity).
 _NO_AGENT = "(unattributed - no agent_id)"
+
+
+def audit_flagged_share(records: Iterable[AuditRecord]) -> float:
+    """Return the combined deny+review ("flagged") share as a percentage.
+
+    This is the same figure rendered as ``deny+review`` by
+    :func:`summarize_audit` and stored under ``deny_review.pct`` by
+    :func:`audit_stats_dict`, exposed on its own so the ``apg audit stats
+    --fail-over`` CI gate (R39) can threshold it without re-rendering. The
+    value is an exact (unrounded) percentage in ``[0.0, 100.0]``; an empty log
+    yields ``0.0`` so it is never "over" any non-negative threshold.
+
+    Pure (no I/O), mirroring the other ``audit stats`` helpers, so the
+    subcommand and tests can drive it directly.
+    """
+    recs = list(records)
+    total = len(recs)
+    if total == 0:
+        return 0.0
+    flagged = sum(
+        1
+        for r in recs
+        if r.decision.verdict in (Verdict.DENY, Verdict.REVIEW)
+    )
+    return 100.0 * flagged / total
 
 
 def summarize_audit(

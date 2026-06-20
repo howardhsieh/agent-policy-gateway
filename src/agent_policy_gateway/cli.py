@@ -61,6 +61,7 @@ import sys
 from agent_policy_gateway.audit import (
     AuditFormatError,
     AuditRecord,
+    audit_flagged_share,
     audit_stats_dict,
     filter_by_agent,
     filter_by_time,
@@ -546,6 +547,21 @@ def _stats_source_label(paths: list[str]) -> str:
     return f"{len(paths)} logs"
 
 
+def _fail_over_code(records: list[AuditRecord], threshold: float | None) -> int:
+    """Exit code for the ``--fail-over`` CI gate (R39).
+
+    Returns ``5`` when ``threshold`` is set and the deny+review share strictly
+    exceeds it, otherwise ``0``. The comparison uses the exact (unrounded)
+    share from :func:`audit_flagged_share`, so a value just above a printed,
+    one-decimal figure still trips the gate. ``threshold`` of ``None`` (no
+    ``--fail-over``) always yields ``0``; an empty log has a 0.0 share and so
+    is never over a non-negative threshold.
+    """
+    if threshold is None:
+        return 0
+    return 5 if audit_flagged_share(records) > threshold else 0
+
+
 def _cmd_audit_stats(args: argparse.Namespace) -> int:
     """Summarize one or more JSONL audit logs. Exit codes mirror ``apg-replay``:
     ``0`` ok, ``2`` missing file (or ``-`` mixed with paths), ``3`` malformed
@@ -614,7 +630,7 @@ def _cmd_audit_stats(args: argparse.Namespace) -> int:
             top_agents=args.top_agents,
         )
         print(json.dumps(stats, indent=2))
-        return 0
+        return _fail_over_code(records, args.fail_over)
     for line in summarize_audit(
         records,
         source=source,
@@ -624,7 +640,7 @@ def _cmd_audit_stats(args: argparse.Namespace) -> int:
         top_agents=args.top_agents,
     ):
         print(line)
-    return 0
+    return _fail_over_code(records, args.fail_over)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -889,6 +905,19 @@ def _build_parser() -> argparse.ArgumentParser:
             "(records with no agent_id) with the sentinel "
             "--agent '(unattributed - no agent_id)'. Omit to summarize all "
             "agents."
+        ),
+    )
+    stats_p.add_argument(
+        "--fail-over",
+        type=float,
+        default=None,
+        metavar="PCT",
+        help=(
+            "CI gate: exit 5 (after still printing the summary) when the "
+            "combined deny+review share of the filtered records exceeds PCT "
+            "percent; at or under PCT exit 0. Off by default, so omitting it "
+            "leaves exit codes unchanged. Composes with the filters above; an "
+            "empty log is never over threshold."
         ),
     )
     stats_p.set_defaults(func=_cmd_audit_stats)

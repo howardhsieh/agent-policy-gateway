@@ -27,6 +27,7 @@ from agent_policy_gateway.audit import (
     _NO_AGENT,
     AuditRecord,
     JsonlAuditWriter,
+    audit_flagged_share,
     read_audit,
 )
 from agent_policy_gateway.cli import main
@@ -1366,3 +1367,109 @@ class TestPerListTopOverridesCli:
         assert len(d["top_rules"]) == 3
         assert len(d["top_tools"]) == 3
         assert len(d["top_agents"]) == 8
+
+
+# --- R39: --fail-over CI gate -------------------------------------------------
+
+
+def _flagged_log(path: Path) -> Path:
+    """A 4-record log: 2 allow, 1 deny, 1 review (deny+review share = 50.0%)."""
+    return _write_log(
+        path,
+        [
+            ("read_file", Verdict.ALLOW, None),
+            ("read_file", Verdict.ALLOW, None),
+            ("send_email", Verdict.DENY, "no-exfil"),
+            ("post_msg", Verdict.REVIEW, "needs-review"),
+        ],
+    )
+
+
+class TestAuditFlaggedShare:
+    def test_empty_log_is_zero(self) -> None:
+        assert audit_flagged_share([]) == 0.0
+
+    def test_share_is_exact_unrounded(self, tmp_path: Path) -> None:
+        # 1 deny out of 3 records => 33.333...%, not the printed 33.3.
+        log = _write_log(
+            tmp_path / "x.jsonl",
+            [
+                ("a", Verdict.ALLOW, None),
+                ("b", Verdict.ALLOW, None),
+                ("c", Verdict.DENY, "r"),
+            ],
+        )
+        share = audit_flagged_share(list(read_audit(str(log))))
+        assert abs(share - 100.0 / 3.0) < 1e-9
+
+    def test_matches_summary(self, tmp_path: Path) -> None:
+        log = _flagged_log(tmp_path / "x.jsonl")
+        assert audit_flagged_share(list(read_audit(str(log)))) == 50.0
+
+
+class TestFailOverGate:
+    def test_default_no_flag_exits_zero(self, tmp_path: Path) -> None:
+        log = _flagged_log(tmp_path / "x.jsonl")
+        rc, out, _ = _run(["audit", "stats", str(log)])
+        assert rc == 0
+        assert "deny+review: 2/4" in out
+
+    def test_over_threshold_exits_5_and_prints_summary(
+        self, tmp_path: Path
+    ) -> None:
+        log = _flagged_log(tmp_path / "x.jsonl")
+        rc, out, _ = _run(["audit", "stats", str(log), "--fail-over", "40"])
+        assert rc == 5
+        assert "deny+review: 2/4" in out  # summary still printed
+
+    def test_at_threshold_exits_zero(self, tmp_path: Path) -> None:
+        log = _flagged_log(tmp_path / "x.jsonl")
+        rc, _, _ = _run(["audit", "stats", str(log), "--fail-over", "50"])
+        assert rc == 0
+
+    def test_under_threshold_exits_zero(self, tmp_path: Path) -> None:
+        log = _flagged_log(tmp_path / "x.jsonl")
+        rc, _, _ = _run(["audit", "stats", str(log), "--fail-over", "60"])
+        assert rc == 0
+
+    def test_exact_share_beats_rounded_print(self, tmp_path: Path) -> None:
+        # 1/3 = 33.333% prints as 33.3 but must still trip a 33.3 threshold.
+        log = _write_log(
+            tmp_path / "x.jsonl",
+            [
+                ("a", Verdict.ALLOW, None),
+                ("b", Verdict.ALLOW, None),
+                ("c", Verdict.DENY, "r"),
+            ],
+        )
+        rc, out, _ = _run(["audit", "stats", str(log), "--fail-over", "33.3"])
+        assert "(33.3%)" in out
+        assert rc == 5
+
+    def test_empty_log_never_over_threshold(self, tmp_path: Path) -> None:
+        empty = tmp_path / "empty.jsonl"
+        empty.write_text("")
+        rc, out, _ = _run(["audit", "stats", str(empty), "--fail-over", "0"])
+        assert rc == 0
+        assert "records:     0" in out
+
+    def test_json_branch_is_also_gated(self, tmp_path: Path) -> None:
+        log = _flagged_log(tmp_path / "x.jsonl")
+        rc, out, _ = _run(
+            ["audit", "stats", str(log), "--json", "--fail-over", "40"]
+        )
+        assert rc == 5
+        assert json.loads(out)["deny_review"]["count"] == 2
+
+    def test_composes_with_verdict_filter(self, tmp_path: Path) -> None:
+        log = _flagged_log(tmp_path / "x.jsonl")
+        # Restrict to allow-only: flagged share drops to 0, gate passes.
+        rc, _, _ = _run(
+            ["audit", "stats", str(log), "--verdict", "allow", "--fail-over", "0"]
+        )
+        assert rc == 0
+        # Restrict to deny-only: 100% flagged, even a high threshold trips.
+        rc, _, _ = _run(
+            ["audit", "stats", str(log), "--verdict", "deny", "--fail-over", "99"]
+        )
+        assert rc == 5
