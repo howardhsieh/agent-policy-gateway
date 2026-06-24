@@ -65,6 +65,7 @@ from agent_policy_gateway.audit import (
     audit_stats_csv,
     audit_stats_dict,
     filter_by_agent,
+    filter_by_rule,
     filter_by_time,
     filter_by_tool,
     filter_by_verdict,
@@ -621,6 +622,11 @@ def _cmd_audit_stats(args: argparse.Namespace) -> int:
     # selectable via the literal sentinel pattern. None means no filter;
     # composes with --verdict/--since/--until/--tool.
     records = filter_by_agent(records, args.agent)
+    # R41: narrow to records whose matched rule id matches any --rule glob
+    # (union, fnmatch), mirroring --tool/--agent. The default/no-rule bucket
+    # is selectable via the literal _NO_RULE sentinel pattern. None means no
+    # filter; composes with --verdict/--since/--until/--tool/--agent.
+    records = filter_by_rule(records, args.rule)
     if args.csv:
         for line in audit_stats_csv(records, source=source):
             print(line)
@@ -921,6 +927,20 @@ def _build_parser() -> argparse.ArgumentParser:
             "(records with no agent_id) with the sentinel "
             "--agent '(unattributed - no agent_id)'. Omit to summarize all "
             "agents."
+        ),
+    )
+    stats_p.add_argument(
+        "--rule",
+        action="append",
+        default=None,
+        metavar="GLOB",
+        help=(
+            "Only summarize records whose matched rule id matches this "
+            "fnmatch glob (e.g. --rule 'deny-*'). Repeatable to union "
+            "several patterns; a literal id selects an exact match. Select "
+            "default/unruled traffic (decisions with no rule_id) with the "
+            "sentinel --rule '(default - no rule)'. Omit to summarize all "
+            "rules."
         ),
     )
     stats_p.add_argument(

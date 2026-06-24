@@ -519,6 +519,42 @@ def filter_by_agent(
     ]
 
 
+def filter_by_rule(
+    records: Iterable[AuditRecord],
+    patterns: Iterable[str] | None,
+) -> list[AuditRecord]:
+    """Return only the records whose ``decision.rule_id`` matches ``patterns``.
+
+    Mirrors :func:`filter_by_agent` (R36) but matches the *matched rule id*
+    rather than the agent: each pattern is an :func:`fnmatch.fnmatchcase` glob
+    (``*``, ``?``, ``[seq]``) and a record is kept when its rule id matches
+    *any* pattern (union); a literal pattern with no wildcards selects an exact
+    id. Matching is case-sensitive. A falsy ``patterns`` value (``None`` or an
+    empty collection) means "no filter" and returns every record unchanged.
+
+    Decisions that carried no ``rule_id`` (the gateway's default, no-rule
+    bucket) are matched under the :data:`_NO_RULE` sentinel label, reusing the
+    R33 semantics from the top-rules breakdown. Callers therefore select
+    default/unruled traffic with an explicit
+    ``filter_by_rule(records, [_NO_RULE])`` (the CLI surfaces the literal
+    sentinel string in ``--help``).
+
+    Pure (no I/O), order-preserving, and materialized into a list so callers
+    can summarize the subset more than once. A pattern set that matches
+    nothing yields an empty list, which both renderers treat as an empty log.
+    """
+    if not patterns:
+        return list(records)
+    pats = list(patterns)
+    return [
+        r
+        for r in records
+        if any(
+            fnmatch.fnmatchcase(r.decision.rule_id or _NO_RULE, p) for p in pats
+        )
+    ]
+
+
 # --- audit stats summary (R29) ------------------------------------------------
 
 

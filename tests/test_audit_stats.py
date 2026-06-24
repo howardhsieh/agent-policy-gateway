@@ -19,6 +19,7 @@ from agent_policy_gateway import (
     audit_stats_csv,
     audit_stats_dict,
     filter_by_agent,
+    filter_by_rule,
     filter_by_time,
     filter_by_tool,
     filter_by_verdict,
@@ -26,6 +27,7 @@ from agent_policy_gateway import (
 )
 from agent_policy_gateway.audit import (
     _NO_AGENT,
+    _NO_RULE,
     AuditRecord,
     JsonlAuditWriter,
     audit_flagged_share,
@@ -1586,3 +1588,156 @@ class TestAuditStatsCsvCli:
         assert rc == 5
         # the CSV is still printed before the gate fires
         assert out.splitlines()[-1] == "deny+review,3,60.0"
+
+
+# --- R41: rule-id filter (``apg audit stats --rule <glob>``) ------------------
+
+
+class TestFilterByRule:
+    """Pure ``filter_by_rule`` helper: fnmatch globs over ``decision.rule_id``."""
+
+    def _records(self) -> list[AuditRecord]:
+        # rule ids include the default/no-rule (None) bucket.
+        rules: list[str | None] = ["deny-egress", "deny-secrets", "allow-kb", None]
+        return [
+            AuditRecord(
+                ts="2026-06-08T00:00:00.000000Z",
+                call=ToolCall(tool_name="t"),
+                decision=Decision(verdict=Verdict.ALLOW, rule_id=rid),
+            )
+            for rid in rules
+        ]
+
+    def test_no_filter_returns_all_unchanged(self) -> None:
+        recs = self._records()
+        assert filter_by_rule(recs, None) == recs
+
+    def test_empty_patterns_returns_all_unchanged(self) -> None:
+        recs = self._records()
+        assert filter_by_rule(recs, []) == recs
+
+    def test_single_glob_matches_prefix(self) -> None:
+        recs = self._records()
+        out = filter_by_rule(recs, ["deny-*"])
+        assert [r.decision.rule_id for r in out] == ["deny-egress", "deny-secrets"]
+
+    def test_literal_pattern_is_exact_match(self) -> None:
+        recs = self._records()
+        out = filter_by_rule(recs, ["allow-kb"])
+        assert [r.decision.rule_id for r in out] == ["allow-kb"]
+
+    def test_multi_pattern_union(self) -> None:
+        recs = self._records()
+        out = filter_by_rule(recs, ["allow-kb", "deny-secrets"])
+        assert [r.decision.rule_id for r in out] == ["deny-secrets", "allow-kb"]
+
+    def test_default_bucket_selected_by_sentinel(self) -> None:
+        recs = self._records()
+        out = filter_by_rule(recs, [_NO_RULE])
+        assert [r.decision.rule_id for r in out] == [None]
+
+    def test_sentinel_composes_with_named_rule(self) -> None:
+        recs = self._records()
+        out = filter_by_rule(recs, ["allow-kb", _NO_RULE])
+        assert [r.decision.rule_id for r in out] == ["allow-kb", None]
+
+    def test_no_match_is_empty(self) -> None:
+        recs = self._records()
+        assert filter_by_rule(recs, ["nope-*"]) == []
+
+    def test_matching_is_case_sensitive(self) -> None:
+        recs = self._records()
+        assert filter_by_rule(recs, ["DENY-*"]) == []
+
+    def test_preserves_order(self) -> None:
+        recs = self._records()
+        out = filter_by_rule(recs, ["*"])
+        # "*" matches every named rule; the None bucket maps to the sentinel
+        # label, which "*" also matches, so all records pass through unchanged.
+        assert out == recs
+
+
+class TestAuditStatsRuleCli:
+    """``apg audit stats --rule`` over a real JSONL log."""
+
+    def _log(self, path: Path) -> Path:
+        rows: list[tuple[str, Verdict, str | None]] = [
+            ("send_email", Verdict.DENY, "deny-egress"),
+            ("web_fetch", Verdict.ALLOW, None),
+            ("kb_lookup", Verdict.ALLOW, "allow-kb"),
+            ("send_email", Verdict.REVIEW, "deny-egress"),
+        ]
+        writer = JsonlAuditWriter(path, clock=_clock())
+        with writer:
+            for tool, verdict, rule in rows:
+                writer(
+                    ToolCall(tool_name=tool, agent_id="svc.x"),
+                    Decision(verdict=verdict, rule_id=rule),
+                )
+        return path
+
+    def test_glob_filters_text(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        rc, out, err = _run(["audit", "stats", str(log), "--rule", "deny-*"])
+        assert rc == 0
+        assert "records:     2" in out
+
+    def test_glob_filters_json(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        rc, out, err = _run(
+            ["audit", "stats", str(log), "--json", "--rule", "deny-egress"]
+        )
+        assert rc == 0
+        data = json.loads(out)
+        assert data["records"] == 2
+        assert data["verdicts"]["deny"]["count"] == 1
+        assert data["verdicts"]["review"]["count"] == 1
+
+    def test_repeatable_rule_unions(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        rc, out, err = _run(
+            [
+                "audit", "stats", str(log), "--json",
+                "--rule", "allow-kb", "--rule", "deny-egress",
+            ]
+        )
+        assert rc == 0
+        data = json.loads(out)
+        assert data["records"] == 3
+
+    def test_sentinel_selects_default_bucket(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        rc, out, err = _run(
+            ["audit", "stats", str(log), "--json", "--rule", _NO_RULE]
+        )
+        assert rc == 0
+        data = json.loads(out)
+        assert data["records"] == 1
+        assert data["verdicts"]["allow"]["count"] == 1
+
+    def test_composes_with_verdict(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        # deny-egress has the two send_email rows; --verdict deny narrows to one.
+        rc, out, err = _run(
+            [
+                "audit", "stats", str(log), "--json",
+                "--rule", "deny-*", "--verdict", "deny",
+            ]
+        )
+        assert rc == 0
+        data = json.loads(out)
+        assert data["records"] == 1
+        assert data["verdicts"]["deny"]["count"] == 1
+
+    def test_no_match_is_empty_log(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        rc, out, err = _run(["audit", "stats", str(log), "--rule", "nope-*"])
+        assert rc == 0
+        assert "records:     0" in out
+        assert "(log is empty - no records to summarize)" in out
+
+    def test_no_rule_matches_all(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        rc, out, err = _run(["audit", "stats", str(log)])
+        assert rc == 0
+        assert "records:     4" in out
