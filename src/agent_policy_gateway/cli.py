@@ -59,11 +59,12 @@ import json
 import sys
 
 from agent_policy_gateway.audit import (
+    CSV_SECTIONS,
     AuditFormatError,
     AuditRecord,
     audit_flagged_share,
-    audit_stats_csv,
     audit_stats_dict,
+    audit_stats_section_csv,
     filter_by_agent,
     filter_by_rule,
     filter_by_time,
@@ -578,6 +579,11 @@ def _cmd_audit_stats(args: argparse.Namespace) -> int:
     # below then apply to the union. ``-`` (stdin, R32) stays a single-source
     # shorthand and may not be mixed with file paths.
     logs: list[str] = args.log
+    # R42: --csv-section only shapes the CSV renderer, so requiring --csv keeps
+    # the flag from silently doing nothing under the text/JSON renderers.
+    if args.csv_section != "verdicts" and not args.csv:
+        print("apg: --csv-section requires --csv", file=sys.stderr)
+        return 2
     if "-" in logs and len(logs) > 1:
         print(
             "apg: '-' (stdin) cannot be combined with file paths",
@@ -628,7 +634,19 @@ def _cmd_audit_stats(args: argparse.Namespace) -> int:
     # filter; composes with --verdict/--since/--until/--tool/--agent.
     records = filter_by_rule(records, args.rule)
     if args.csv:
-        for line in audit_stats_csv(records, source=source):
+        # R42: --csv-section picks which breakdown to emit; "verdicts" (the
+        # default) is delegated to the R40 renderer, so plain --csv is
+        # byte-for-byte unchanged. The list sections honor --top and the
+        # per-list caps exactly like the text/JSON renderers.
+        for line in audit_stats_section_csv(
+            records,
+            args.csv_section,
+            source=source,
+            top_n=args.top,
+            top_rules=args.top_rules,
+            top_tools=args.top_tools,
+            top_agents=args.top_agents,
+        ):
             print(line)
         return _fail_over_code(records, args.fail_over)
     if args.json:
@@ -872,6 +890,16 @@ def _build_parser() -> argparse.ArgumentParser:
             "(verdict,count,pct header, one row per verdict in enum order, "
             "then a deny+review row) for piping into a spreadsheet. Mutually "
             "exclusive with --json."
+        ),
+    )
+    stats_p.add_argument(
+        "--csv-section",
+        choices=list(CSV_SECTIONS),
+        default="verdicts",
+        help=(
+            "Which breakdown --csv emits: the per-verdict table (default) or "
+            "the ranked rules/tools/agents list as a <name>,count,pct table "
+            "honoring --top and the per-list caps. Requires --csv."
         ),
     )
     stats_p.add_argument(

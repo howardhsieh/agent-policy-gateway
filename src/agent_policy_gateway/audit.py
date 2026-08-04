@@ -57,6 +57,7 @@ __all__ = [
     "audit_flagged_share",
     "audit_stats_csv",
     "audit_stats_dict",
+    "audit_stats_section_csv",
     "filter_by_agent",
     "filter_by_tool",
     "filter_by_verdict",
@@ -796,6 +797,97 @@ def audit_stats_csv(
         Verdict.REVIEW, 0
     )
     lines.append(f"deny+review,{flagged},{_pct(flagged, total)}")
+    return lines
+
+
+# --- audit stats section CSV (R42) --------------------------------------------
+
+
+#: The breakdowns ``audit_stats_section_csv`` can emit, mapped to the singular
+#: noun used as the first CSV header field. ``verdicts`` is the R40 default and
+#: is delegated verbatim to :func:`audit_stats_csv`.
+CSV_SECTIONS: tuple[str, ...] = ("verdicts", "rules", "tools", "agents")
+
+_SECTION_LABEL = {"rules": "rule", "tools": "tool", "agents": "agent"}
+
+
+def _csv_field(value: str) -> str:
+    """Quote a CSV field only when it needs it (comma, quote, or newline)."""
+    if any(c in value for c in ',"\r\n'):
+        return '"' + value.replace('"', '""') + '"'
+    return value
+
+
+def audit_stats_section_csv(
+    records: Iterable[AuditRecord],
+    section: str = "verdicts",
+    *,
+    source: str | None = None,
+    top_n: int = 5,
+    top_rules: int | None = None,
+    top_tools: int | None = None,
+    top_agents: int | None = None,
+) -> list[str]:
+    """Return one breakdown of the audit statistics as CSV rows.
+
+    Generalizes :func:`audit_stats_csv` beyond the per-verdict table
+    (``apg audit stats --csv --csv-section ...``). ``section`` selects the
+    breakdown:
+
+    * ``"verdicts"`` (default) delegates to :func:`audit_stats_csv`, so the
+      R40 output is reproduced byte-for-byte and ``--csv`` alone is unchanged.
+    * ``"rules"`` / ``"tools"`` / ``"agents"`` emit the corresponding ranked
+      top-N list as a ``rule,count,pct`` / ``tool,count,pct`` /
+      ``agent,count,pct`` header followed by one row per entry, in the same
+      order (count descending, ties by name ascending) that
+      :func:`summarize_audit` and :func:`audit_stats_dict` use. The per-list
+      caps behave as elsewhere: an omitted ``top_rules``/``top_tools``/
+      ``top_agents`` falls back to the shared ``top_n``.
+
+    Percentages are the entry's share of the (already filtered) record total,
+    formatted by the shared :func:`_pct` helper, matching the sibling
+    renderers. The unnamed buckets use the same ``_NO_RULE`` / ``_NO_AGENT``
+    sentinel labels as the text and JSON renderers.
+
+    Like the other ``audit stats`` helpers this performs no I/O, so the
+    subcommand and tests can drive it directly. An empty log yields just the
+    header row. Names are CSV-quoted only when they contain a comma, quote, or
+    newline, so ordinary tool/rule/agent identifiers stay bare.
+
+    Raises :class:`ValueError` for an unknown ``section``.
+    """
+    if section not in CSV_SECTIONS:
+        raise ValueError(
+            f"unknown csv section: {section!r} "
+            f"(expected one of {', '.join(CSV_SECTIONS)})"
+        )
+    if section == "verdicts":
+        return audit_stats_csv(records, source=source)
+
+    recs = list(records)
+    total = len(recs)
+    label = _SECTION_LABEL[section]
+    header = f"{label},count,pct"
+    if total == 0:
+        return [header]
+
+    if section == "rules":
+        counts: Counter[str] = Counter(
+            r.decision.rule_id if r.decision.rule_id else _NO_RULE for r in recs
+        )
+        cap = top_n if top_rules is None else top_rules
+    elif section == "tools":
+        counts = Counter(r.call.tool_name for r in recs)
+        cap = top_n if top_tools is None else top_tools
+    else:  # "agents"
+        counts = Counter(
+            r.call.agent_id if r.call.agent_id else _NO_AGENT for r in recs
+        )
+        cap = top_n if top_agents is None else top_agents
+
+    lines = [header]
+    for name, count in _top(counts, cap):
+        lines.append(f"{_csv_field(name)},{count},{_pct(count, total)}")
     return lines
 
 

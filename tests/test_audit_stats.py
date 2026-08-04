@@ -18,6 +18,7 @@ import pytest
 from agent_policy_gateway import (
     audit_stats_csv,
     audit_stats_dict,
+    audit_stats_section_csv,
     filter_by_agent,
     filter_by_rule,
     filter_by_time,
@@ -1741,3 +1742,246 @@ class TestAuditStatsRuleCli:
         rc, out, err = _run(["audit", "stats", str(log)])
         assert rc == 0
         assert "records:     4" in out
+
+
+# --- R42: --csv-section (rules/tools/agents CSV breakdowns) -------------------
+
+
+def _section_records() -> list[AuditRecord]:
+    """5 records with a skewed rule/tool/agent mix plus the unnamed buckets.
+
+    Counts: tools send_email=3, web_fetch=1, kb_lookup=1; rules
+    deny-web-to-email=2, _NO_RULE=1, allow-internal-readers=1,
+    review-pii-egress=1; agents a.one=3, a.two=1, _NO_AGENT=1.
+    """
+    rows: list[tuple[str, Verdict, str | None, str | None]] = [
+        ("send_email", Verdict.DENY, "deny-web-to-email", "a.one"),
+        ("send_email", Verdict.DENY, "deny-web-to-email", "a.one"),
+        ("web_fetch", Verdict.ALLOW, None, "a.one"),
+        ("kb_lookup", Verdict.ALLOW, "allow-internal-readers", "a.two"),
+        ("send_email", Verdict.REVIEW, "review-pii-egress", None),
+    ]
+    clock = _clock()
+    return [
+        AuditRecord(
+            ts=clock(),
+            call=ToolCall(tool_name=tool, agent_id=agent),
+            decision=Decision(verdict=verdict, rule_id=rule),
+        )
+        for tool, verdict, rule, agent in rows
+    ]
+
+
+class TestAuditStatsSectionCsv:
+    def test_default_section_is_verdicts_and_matches_r40_byte_for_byte(
+        self,
+    ) -> None:
+        recs = _section_records()
+        assert audit_stats_section_csv(recs) == audit_stats_csv(recs)
+        assert audit_stats_section_csv(recs, "verdicts") == audit_stats_csv(recs)
+
+    def test_verdicts_section_passes_source_through_unchanged(self) -> None:
+        recs = _section_records()
+        assert audit_stats_section_csv(
+            recs, "verdicts", source="x.jsonl"
+        ) == audit_stats_csv(recs, source="x.jsonl")
+
+    def test_tools_section_header_and_ranked_rows(self) -> None:
+        lines = audit_stats_section_csv(_section_records(), "tools")
+        assert lines[0] == "tool,count,pct"
+        assert lines[1:] == [
+            "send_email,3,60.0",
+            "kb_lookup,1,20.0",
+            "web_fetch,1,20.0",
+        ]
+
+    def test_rules_section_includes_no_rule_sentinel(self) -> None:
+        lines = audit_stats_section_csv(_section_records(), "rules")
+        assert lines[0] == "rule,count,pct"
+        assert lines[1] == "deny-web-to-email,2,40.0"
+        assert f"{_NO_RULE},1,20.0" in lines[1:]
+
+    def test_agents_section_includes_unattributed_sentinel(self) -> None:
+        lines = audit_stats_section_csv(_section_records(), "agents")
+        assert lines[0] == "agent,count,pct"
+        assert lines[1] == "a.one,3,60.0"
+        assert f"{_NO_AGENT},1,20.0" in lines[1:]
+
+    def test_row_order_matches_the_dict_renderer(self) -> None:
+        recs = _section_records()
+        d = audit_stats_dict(recs)
+        for section, key in (
+            ("rules", "top_rules"),
+            ("tools", "top_tools"),
+            ("agents", "top_agents"),
+        ):
+            lines = audit_stats_section_csv(recs, section)
+            names = [line.rsplit(",", 2)[0] for line in lines[1:]]
+            assert names == [e["name"] for e in d[key]]
+
+    def test_top_n_caps_each_list_section(self) -> None:
+        recs = _distinct_records(8)
+        for section in ("rules", "tools", "agents"):
+            lines = audit_stats_section_csv(recs, section, top_n=3)
+            assert len(lines) == 4  # header + 3 rows
+
+    def test_per_list_caps_override_top_n(self) -> None:
+        recs = _distinct_records(8)
+        assert (
+            len(audit_stats_section_csv(recs, "rules", top_n=5, top_rules=2))
+            == 3
+        )
+        assert (
+            len(audit_stats_section_csv(recs, "tools", top_n=5, top_tools=4))
+            == 5
+        )
+        assert (
+            len(audit_stats_section_csv(recs, "agents", top_n=5, top_agents=1))
+            == 2
+        )
+        # a per-list cap for a different section does not affect this one
+        assert (
+            len(audit_stats_section_csv(recs, "tools", top_n=5, top_rules=1))
+            == 6
+        )
+
+    def test_empty_log_yields_only_the_section_header(self) -> None:
+        assert audit_stats_section_csv([], "rules") == ["rule,count,pct"]
+        assert audit_stats_section_csv([], "tools") == ["tool,count,pct"]
+        assert audit_stats_section_csv([], "agents") == ["agent,count,pct"]
+        assert audit_stats_section_csv([], "verdicts") == ["verdict,count,pct"]
+
+    def test_unknown_section_raises_value_error(self) -> None:
+        with pytest.raises(ValueError, match="unknown csv section"):
+            audit_stats_section_csv(_section_records(), "nope")
+
+    def test_names_with_commas_are_quoted(self) -> None:
+        clock = _clock()
+        recs = [
+            AuditRecord(
+                ts=clock(),
+                call=ToolCall(tool_name='odd,name', agent_id="a"),
+                decision=Decision(verdict=Verdict.ALLOW, rule_id=None),
+            )
+        ]
+        assert audit_stats_section_csv(recs, "tools")[1] == '"odd,name",1,100.0'
+
+
+class TestAuditStatsCsvSectionCli:
+    def _log(self, path: Path) -> Path:
+        return _write_log(
+            path,
+            [
+                ("send_email", Verdict.DENY, "deny-web-to-email"),
+                ("send_email", Verdict.DENY, "deny-web-to-email"),
+                ("web_fetch", Verdict.ALLOW, None),
+                ("kb_lookup", Verdict.ALLOW, "allow-internal-readers"),
+                ("send_email", Verdict.REVIEW, "review-pii-egress"),
+            ],
+        )
+
+    def test_plain_csv_is_unchanged_by_the_new_flag(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "a.jsonl")
+        _, plain, _ = _run(["audit", "stats", str(log), "--csv"])
+        _, explicit, _ = _run(
+            ["audit", "stats", str(log), "--csv", "--csv-section", "verdicts"]
+        )
+        assert plain == explicit
+        assert plain.splitlines()[0] == "verdict,count,pct"
+
+    def test_tools_section(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "a.jsonl")
+        rc, out, err = _run(
+            ["audit", "stats", str(log), "--csv", "--csv-section", "tools"]
+        )
+        assert rc == 0
+        assert err == ""
+        assert out.splitlines() == [
+            "tool,count,pct",
+            "send_email,3,60.0",
+            "kb_lookup,1,20.0",
+            "web_fetch,1,20.0",
+        ]
+
+    def test_rules_section(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "a.jsonl")
+        rc, out, _ = _run(
+            ["audit", "stats", str(log), "--csv", "--csv-section", "rules"]
+        )
+        assert rc == 0
+        lines = out.splitlines()
+        assert lines[0] == "rule,count,pct"
+        assert lines[1] == "deny-web-to-email,2,40.0"
+
+    def test_agents_section(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "a.jsonl")
+        rc, out, _ = _run(
+            ["audit", "stats", str(log), "--csv", "--csv-section", "agents"]
+        )
+        assert rc == 0
+        # _write_log tags every record with agent.x
+        assert out.splitlines() == ["agent,count,pct", "agent.x,5,100.0"]
+
+    def test_section_honors_top_and_per_list_caps(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "a.jsonl")
+        rc, out, _ = _run(
+            ["audit", "stats", str(log), "--csv", "--csv-section", "tools", "--top", "1"]
+        )
+        assert rc == 0
+        assert out.splitlines() == ["tool,count,pct", "send_email,3,60.0"]
+        rc, out, _ = _run(
+            [
+                "audit", "stats", str(log), "--csv", "--csv-section", "tools",
+                "--top", "1", "--top-tools", "2",
+            ]
+        )
+        assert rc == 0
+        assert len(out.splitlines()) == 3
+
+    def test_section_composes_with_filters(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "a.jsonl")
+        rc, out, _ = _run(
+            [
+                "audit", "stats", str(log), "--csv", "--csv-section", "tools",
+                "--verdict", "deny",
+            ]
+        )
+        assert rc == 0
+        assert out.splitlines() == ["tool,count,pct", "send_email,2,100.0"]
+
+    def test_section_composes_with_fail_over_gate(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "a.jsonl")
+        rc, out, _ = _run(
+            [
+                "audit", "stats", str(log), "--csv", "--csv-section", "rules",
+                "--fail-over", "40",
+            ]
+        )
+        assert rc == 5
+        assert out.splitlines()[0] == "rule,count,pct"
+
+    def test_empty_log_prints_only_section_header(self, tmp_path: Path) -> None:
+        log = tmp_path / "empty.jsonl"
+        log.write_text("", encoding="utf-8")
+        rc, out, _ = _run(
+            ["audit", "stats", str(log), "--csv", "--csv-section", "tools"]
+        )
+        assert rc == 0
+        assert out.splitlines() == ["tool,count,pct"]
+
+    def test_section_without_csv_exits_2(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "a.jsonl")
+        rc, out, err = _run(
+            ["audit", "stats", str(log), "--csv-section", "tools"]
+        )
+        assert rc == 2
+        assert out == ""
+        assert "--csv-section requires --csv" in err
+
+    def test_invalid_section_is_argparse_error_exit_2(
+        self, tmp_path: Path
+    ) -> None:
+        log = self._log(tmp_path / "a.jsonl")
+        with pytest.raises(SystemExit) as exc:
+            _run(["audit", "stats", str(log), "--csv", "--csv-section", "nope"])
+        assert exc.value.code == 2
