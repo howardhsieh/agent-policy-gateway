@@ -19,6 +19,10 @@ from agent_policy_gateway import (
     audit_stats_csv,
     audit_stats_dict,
     audit_stats_section_csv,
+    exclude_by,
+    exclude_by_agent,
+    exclude_by_rule,
+    exclude_by_tool,
     filter_by_agent,
     filter_by_rule,
     filter_by_time,
@@ -1985,3 +1989,253 @@ class TestAuditStatsCsvSectionCli:
         with pytest.raises(SystemExit) as exc:
             _run(["audit", "stats", str(log), "--csv", "--csv-section", "nope"])
         assert exc.value.code == 2
+
+
+# --- negative filters (R43) ---------------------------------------------------
+
+
+def _exclude_records() -> list[AuditRecord]:
+    """Records spanning tool / agent / rule axes incl. both sentinel buckets."""
+    rows: list[tuple[str, str | None, str | None]] = [
+        ("send_email", "svc.mailer", "deny-egress"),
+        ("send_test", "svc.mailer", "allow-test"),
+        ("web_fetch", None, None),
+        ("kb_lookup", "svc.kb", "allow-kb"),
+    ]
+    return [
+        AuditRecord(
+            ts="2026-06-08T00:00:00.000000Z",
+            call=ToolCall(tool_name=tool, agent_id=agent),
+            decision=Decision(verdict=Verdict.ALLOW, rule_id=rule),
+        )
+        for tool, agent, rule in rows
+    ]
+
+
+class TestExcludeBy:
+    """Pure ``exclude_by`` helper: inverted fnmatch globs over one axis."""
+
+    def test_none_patterns_returns_all_unchanged(self) -> None:
+        recs = _exclude_records()
+        assert exclude_by(recs, "tool", None) == recs
+
+    def test_empty_patterns_returns_all_unchanged(self) -> None:
+        recs = _exclude_records()
+        assert exclude_by(recs, "agent", []) == recs
+
+    def test_tool_axis_drops_glob_matches(self) -> None:
+        recs = _exclude_records()
+        out = exclude_by(recs, "tool", ["send_*"])
+        assert [r.call.tool_name for r in out] == ["web_fetch", "kb_lookup"]
+
+    def test_agent_axis_drops_glob_matches(self) -> None:
+        recs = _exclude_records()
+        out = exclude_by(recs, "agent", ["svc.mailer"])
+        assert [r.call.tool_name for r in out] == ["web_fetch", "kb_lookup"]
+
+    def test_rule_axis_drops_glob_matches(self) -> None:
+        recs = _exclude_records()
+        out = exclude_by(recs, "rule", ["allow-*"])
+        assert [r.decision.rule_id for r in out] == ["deny-egress", None]
+
+    def test_multi_pattern_union_of_exclusions(self) -> None:
+        recs = _exclude_records()
+        out = exclude_by(recs, "tool", ["send_test", "kb_*"])
+        assert [r.call.tool_name for r in out] == ["send_email", "web_fetch"]
+
+    def test_agent_sentinel_drops_unattributed_bucket(self) -> None:
+        recs = _exclude_records()
+        out = exclude_by(recs, "agent", [_NO_AGENT])
+        assert [r.call.agent_id for r in out] == [
+            "svc.mailer",
+            "svc.mailer",
+            "svc.kb",
+        ]
+
+    def test_rule_sentinel_drops_default_bucket(self) -> None:
+        recs = _exclude_records()
+        out = exclude_by(recs, "rule", [_NO_RULE])
+        assert [r.decision.rule_id for r in out] == [
+            "deny-egress",
+            "allow-test",
+            "allow-kb",
+        ]
+
+    def test_matching_is_case_sensitive(self) -> None:
+        recs = _exclude_records()
+        assert exclude_by(recs, "tool", ["SEND_*"]) == recs
+
+    def test_no_match_is_passthrough(self) -> None:
+        recs = _exclude_records()
+        assert exclude_by(recs, "tool", ["nope_*"]) == recs
+
+    def test_excluding_everything_is_empty(self) -> None:
+        recs = _exclude_records()
+        assert exclude_by(recs, "tool", ["*"]) == []
+
+    def test_preserves_order(self) -> None:
+        recs = _exclude_records()
+        out = exclude_by(recs, "tool", ["send_test"])
+        assert out == [recs[0], recs[2], recs[3]]
+
+    def test_unknown_key_raises_value_error(self) -> None:
+        with pytest.raises(ValueError, match="unknown exclude key"):
+            exclude_by(_exclude_records(), "verdict", ["allow"])
+
+
+class TestExcludeWrappers:
+    """The three thin wrappers delegate to ``exclude_by`` on their axis."""
+
+    def test_exclude_by_tool(self) -> None:
+        recs = _exclude_records()
+        assert exclude_by_tool(recs, ["send_*"]) == exclude_by(
+            recs, "tool", ["send_*"]
+        )
+
+    def test_exclude_by_agent(self) -> None:
+        recs = _exclude_records()
+        assert exclude_by_agent(recs, ["svc.*"]) == exclude_by(
+            recs, "agent", ["svc.*"]
+        )
+
+    def test_exclude_by_rule(self) -> None:
+        recs = _exclude_records()
+        assert exclude_by_rule(recs, ["deny-*"]) == exclude_by(
+            recs, "rule", ["deny-*"]
+        )
+
+    def test_wrappers_passthrough_on_none(self) -> None:
+        recs = _exclude_records()
+        assert exclude_by_tool(recs, None) == recs
+        assert exclude_by_agent(recs, None) == recs
+        assert exclude_by_rule(recs, None) == recs
+
+
+class TestIncludeThenExclude:
+    """Includes run first, exclusions second (the CLI's application order)."""
+
+    def test_include_family_minus_one_member(self) -> None:
+        recs = _exclude_records()
+        kept = exclude_by_tool(filter_by_tool(recs, ["send_*"]), ["send_test"])
+        assert [r.call.tool_name for r in kept] == ["send_email"]
+
+    def test_exclusion_cannot_readmit_excluded_include(self) -> None:
+        recs = _exclude_records()
+        # --tool send_test narrows to one record; excluding it empties the set.
+        kept = exclude_by_tool(filter_by_tool(recs, ["send_test"]), ["send_*"])
+        assert kept == []
+
+    def test_axes_compose_independently(self) -> None:
+        recs = _exclude_records()
+        kept = exclude_by_rule(
+            exclude_by_agent(recs, [_NO_AGENT]), ["allow-test"]
+        )
+        assert [r.call.tool_name for r in kept] == ["send_email", "kb_lookup"]
+
+
+class TestAuditStatsExcludeCli:
+    """``apg audit stats --exclude-*`` over a real JSONL log."""
+
+    def _log(self, path: Path) -> Path:
+        rows: list[tuple[str, Verdict, str | None]] = [
+            ("send_email", Verdict.DENY, "deny-egress"),
+            ("send_test", Verdict.ALLOW, "allow-test"),
+            ("web_fetch", Verdict.ALLOW, None),
+            ("kb_lookup", Verdict.ALLOW, "allow-kb"),
+        ]
+        return _write_log(path, rows)
+
+    def test_exclude_tool_drops_matches(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        rc, out, err = _run(
+            ["audit", "stats", str(log), "--exclude-tool", "send_*"]
+        )
+        assert rc == 0
+        assert "records:     2" in out
+        assert "send_email" not in out
+
+    def test_exclude_tool_is_repeatable(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        rc, out, err = _run(
+            [
+                "audit",
+                "stats",
+                str(log),
+                "--exclude-tool",
+                "send_test",
+                "--exclude-tool",
+                "kb_*",
+            ]
+        )
+        assert rc == 0
+        assert "records:     2" in out
+
+    def test_include_then_exclude_composition(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        rc, out, err = _run(
+            [
+                "audit",
+                "stats",
+                str(log),
+                "--tool",
+                "send_*",
+                "--exclude-tool",
+                "send_test",
+            ]
+        )
+        assert rc == 0
+        assert "records:     1" in out
+        assert "send_email" in out
+
+    def test_exclude_agent_sentinel(self, tmp_path: Path) -> None:
+        # _write_log stamps every record with agent_id="agent.x", so excluding
+        # the unattributed sentinel must be a no-op here.
+        log = self._log(tmp_path / "t.jsonl")
+        rc, out, err = _run(
+            ["audit", "stats", str(log), "--exclude-agent", _NO_AGENT]
+        )
+        assert rc == 0
+        assert "records:     4" in out
+
+    def test_exclude_agent_drops_named_agent(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        rc, out, err = _run(
+            ["audit", "stats", str(log), "--exclude-agent", "agent.*"]
+        )
+        assert rc == 0
+        assert "records:     0" in out
+
+    def test_exclude_rule_drops_matches(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        rc, out, err = _run(
+            ["audit", "stats", str(log), "--exclude-rule", "allow-*"]
+        )
+        assert rc == 0
+        assert "records:     2" in out
+
+    def test_exclude_rule_sentinel_drops_default_bucket(
+        self, tmp_path: Path
+    ) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        rc, out, err = _run(
+            ["audit", "stats", str(log), "--exclude-rule", _NO_RULE]
+        )
+        assert rc == 0
+        assert "records:     3" in out
+
+    def test_exclude_composes_with_json(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        rc, out, err = _run(
+            ["audit", "stats", str(log), "--json", "--exclude-tool", "send_*"]
+        )
+        assert rc == 0
+        payload = json.loads(out)
+        assert payload["records"] == 2
+
+    def test_no_exclude_flags_leaves_output_unchanged(
+        self, tmp_path: Path
+    ) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        rc, out, _ = _run(["audit", "stats", str(log)])
+        assert rc == 0
+        assert "records:     4" in out

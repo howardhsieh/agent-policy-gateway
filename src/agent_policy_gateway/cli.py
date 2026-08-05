@@ -65,6 +65,9 @@ from agent_policy_gateway.audit import (
     audit_flagged_share,
     audit_stats_dict,
     audit_stats_section_csv,
+    exclude_by_agent,
+    exclude_by_rule,
+    exclude_by_tool,
     filter_by_agent,
     filter_by_rule,
     filter_by_time,
@@ -633,6 +636,13 @@ def _cmd_audit_stats(args: argparse.Namespace) -> int:
     # is selectable via the literal _NO_RULE sentinel pattern. None means no
     # filter; composes with --verdict/--since/--until/--tool/--agent.
     records = filter_by_rule(records, args.rule)
+    # R43: drop records matching any --exclude-tool/--exclude-agent/--exclude-rule
+    # glob. Exclusions run *after* the include filters, so
+    # `--tool 'send_*' --exclude-tool send_test` means "the send family minus the
+    # test tool". Each axis is independent and None means "exclude nothing".
+    records = exclude_by_tool(records, args.exclude_tool)
+    records = exclude_by_agent(records, args.exclude_agent)
+    records = exclude_by_rule(records, args.exclude_rule)
     if args.csv:
         # R42: --csv-section picks which breakdown to emit; "verdicts" (the
         # default) is delegated to the R40 renderer, so plain --csv is
@@ -969,6 +979,43 @@ def _build_parser() -> argparse.ArgumentParser:
             "default/unruled traffic (decisions with no rule_id) with the "
             "sentinel --rule '(default - no rule)'. Omit to summarize all "
             "rules."
+        ),
+    )
+    stats_p.add_argument(
+        "--exclude-tool",
+        action="append",
+        default=None,
+        metavar="GLOB",
+        help=(
+            "Drop records whose tool name matches this fnmatch glob (e.g. "
+            "--exclude-tool 'send_test'). Repeatable; a record is dropped when "
+            "it matches any pattern. Applied after --tool, so "
+            "--tool 'send_*' --exclude-tool 'send_test' keeps the send family "
+            "minus the test tool."
+        ),
+    )
+    stats_p.add_argument(
+        "--exclude-agent",
+        action="append",
+        default=None,
+        metavar="GLOB",
+        help=(
+            "Drop records whose agent id matches this fnmatch glob, mirroring "
+            "--exclude-tool. Repeatable; applied after --agent. Drop "
+            "unattributed traffic with the sentinel "
+            "--exclude-agent '(unattributed - no agent_id)'."
+        ),
+    )
+    stats_p.add_argument(
+        "--exclude-rule",
+        action="append",
+        default=None,
+        metavar="GLOB",
+        help=(
+            "Drop records whose matched rule id matches this fnmatch glob, "
+            "mirroring --exclude-tool. Repeatable; applied after --rule. Drop "
+            "default/unruled traffic with the sentinel "
+            "--exclude-rule '(default - no rule)'."
         ),
     )
     stats_p.add_argument(

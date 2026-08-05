@@ -58,7 +58,13 @@ __all__ = [
     "audit_stats_csv",
     "audit_stats_dict",
     "audit_stats_section_csv",
+    "exclude_by",
+    "exclude_by_agent",
+    "exclude_by_rule",
+    "exclude_by_tool",
     "filter_by_agent",
+    "filter_by_rule",
+    "filter_by_time",
     "filter_by_tool",
     "filter_by_verdict",
     "format_record",
@@ -554,6 +560,88 @@ def filter_by_rule(
             fnmatch.fnmatchcase(r.decision.rule_id or _NO_RULE, p) for p in pats
         )
     ]
+
+
+# --- negative filters (R43) ---------------------------------------------------
+
+
+#: Value extractors for :func:`exclude_by`, keyed by filter axis. Each one
+#: returns the *same* string the matching include filter globs against, so the
+#: sentinel buckets (``_NO_AGENT`` / ``_NO_RULE``) are excludable by their
+#: literal labels exactly as they are selectable.
+_EXCLUDE_KEYS: dict[str, Callable[[AuditRecord], str]] = {
+    "tool": lambda r: r.call.tool_name,
+    "agent": lambda r: r.call.agent_id or _NO_AGENT,
+    "rule": lambda r: r.decision.rule_id or _NO_RULE,
+}
+
+
+def exclude_by(
+    records: Iterable[AuditRecord],
+    key: str,
+    patterns: Iterable[str] | None,
+) -> list[AuditRecord]:
+    """Return the records that do **not** match ``patterns`` on axis ``key``.
+
+    The inverse of :func:`filter_by_tool` / :func:`filter_by_agent` /
+    :func:`filter_by_rule`, sharing their matching rules: ``key`` selects the
+    axis (``"tool"`` -> ``call.tool_name``, ``"agent"`` -> ``call.agent_id``,
+    ``"rule"`` -> ``decision.rule_id``), each pattern is an
+    :func:`fnmatch.fnmatchcase` glob (``*``, ``?``, ``[seq]``), matching is
+    case-sensitive, and the unattributed/default buckets are addressed through
+    the :data:`_NO_AGENT` / :data:`_NO_RULE` sentinel labels. A record is
+    *dropped* when it matches **any** pattern (union), so exclusions never
+    interact: adding a pattern can only shrink the result.
+
+    Callers apply the include filters first and the exclusions second, which
+    makes ``--tool 'send_*' --exclude-tool 'send_test'`` mean "the send family
+    minus the test tool". A falsy ``patterns`` value (``None`` or an empty
+    collection) means "exclude nothing" and returns every record unchanged.
+
+    Pure (no I/O), order-preserving, and materialized into a list so callers
+    can summarize the subset more than once. Excluding everything yields an
+    empty list, which both renderers treat as an empty log. An unknown ``key``
+    raises :class:`ValueError`.
+    """
+    try:
+        value_of = _EXCLUDE_KEYS[key]
+    except KeyError:
+        valid = ", ".join(sorted(_EXCLUDE_KEYS))
+        raise ValueError(
+            f"unknown exclude key {key!r} (expected one of: {valid})"
+        ) from None
+    if not patterns:
+        return list(records)
+    pats = list(patterns)
+    return [
+        r
+        for r in records
+        if not any(fnmatch.fnmatchcase(value_of(r), p) for p in pats)
+    ]
+
+
+def exclude_by_tool(
+    records: Iterable[AuditRecord],
+    patterns: Iterable[str] | None,
+) -> list[AuditRecord]:
+    """Drop the records whose ``call.tool_name`` matches any of ``patterns``."""
+    return exclude_by(records, "tool", patterns)
+
+
+def exclude_by_agent(
+    records: Iterable[AuditRecord],
+    patterns: Iterable[str] | None,
+) -> list[AuditRecord]:
+    """Drop the records whose ``call.agent_id`` matches any of ``patterns``."""
+    return exclude_by(records, "agent", patterns)
+
+
+def exclude_by_rule(
+    records: Iterable[AuditRecord],
+    patterns: Iterable[str] | None,
+) -> list[AuditRecord]:
+    """Drop the records whose ``decision.rule_id`` matches any of ``patterns``."""
+    return exclude_by(records, "rule", patterns)
 
 
 # --- audit stats summary (R29) ------------------------------------------------
