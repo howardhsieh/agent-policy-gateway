@@ -643,6 +643,14 @@ def _cmd_audit_stats(args: argparse.Namespace) -> int:
     records = exclude_by_tool(records, args.exclude_tool)
     records = exclude_by_agent(records, args.exclude_agent)
     records = exclude_by_rule(records, args.exclude_rule)
+    # R44: --count-only replaces every renderer with a single integer line (the
+    # filtered record count), for shell pipelines that only need the number.
+    # It runs after all include/exclude filters so the count is the filtered
+    # one, and still returns through the --fail-over gate: the count is printed
+    # first, then the gate decides the exit code (same contract as --csv/--json).
+    if args.count_only:
+        print(len(records))
+        return _fail_over_code(records, args.fail_over)
     if args.csv:
         # R42: --csv-section picks which breakdown to emit; "verdicts" (the
         # default) is delegated to the R40 renderer, so plain --csv is
@@ -900,6 +908,17 @@ def _build_parser() -> argparse.ArgumentParser:
             "(verdict,count,pct header, one row per verdict in enum order, "
             "then a deny+review row) for piping into a spreadsheet. Mutually "
             "exclusive with --json."
+        ),
+    )
+    fmt_group.add_argument(
+        "--count-only",
+        action="store_true",
+        help=(
+            "Print only the number of records left after filtering (a single "
+            "integer line) instead of the summary, for shell pipelines. "
+            "Composes with every filter and with --fail-over (the count is "
+            "printed, then the gate sets the exit code). Mutually exclusive "
+            "with --json and --csv."
         ),
     )
     stats_p.add_argument(

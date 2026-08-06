@@ -2239,3 +2239,168 @@ class TestAuditStatsExcludeCli:
         rc, out, _ = _run(["audit", "stats", str(log)])
         assert rc == 0
         assert "records:     4" in out
+
+
+# --- R44: --count-only scripting mode ----------------------------------------
+
+
+class TestAuditStatsCountOnly:
+    """``apg audit stats --count-only`` prints just the filtered record count."""
+
+    def _log(self, path: Path) -> Path:
+        rows: list[tuple[str, Verdict, str | None]] = [
+            ("send_email", Verdict.DENY, "deny-egress"),
+            ("send_test", Verdict.ALLOW, "allow-test"),
+            ("web_fetch", Verdict.REVIEW, None),
+            ("kb_lookup", Verdict.ALLOW, "allow-kb"),
+        ]
+        return _write_log(path, rows)
+
+    def test_prints_bare_integer_only(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        rc, out, err = _run(["audit", "stats", str(log), "--count-only"])
+        assert rc == 0
+        assert out.splitlines() == ["4"]
+        assert err == ""
+
+    def test_empty_log_counts_zero(self, tmp_path: Path) -> None:
+        empty = _write_log(tmp_path / "empty.jsonl", [])
+        rc, out, _ = _run(["audit", "stats", str(empty), "--count-only"])
+        assert rc == 0
+        assert out.splitlines() == ["0"]
+
+    def test_no_summary_lines_are_emitted(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        _, out, _ = _run(["audit", "stats", str(log), "--count-only"])
+        assert "audit log summary" not in out
+        assert "records:" not in out
+        assert "send_email" not in out
+
+    def test_counts_reflect_verdict_filter(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        rc, out, _ = _run(
+            ["audit", "stats", str(log), "--count-only", "--verdict", "allow"]
+        )
+        assert rc == 0
+        assert out.splitlines() == ["2"]
+
+    def test_counts_reflect_tool_filter(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        rc, out, _ = _run(
+            ["audit", "stats", str(log), "--count-only", "--tool", "send_*"]
+        )
+        assert rc == 0
+        assert out.splitlines() == ["2"]
+
+    def test_counts_reflect_include_then_exclude(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        rc, out, _ = _run(
+            [
+                "audit",
+                "stats",
+                str(log),
+                "--count-only",
+                "--tool",
+                "send_*",
+                "--exclude-tool",
+                "send_test",
+            ]
+        )
+        assert rc == 0
+        assert out.splitlines() == ["1"]
+
+    def test_counts_reflect_rule_and_agent_filters(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        rc, out, _ = _run(
+            [
+                "audit",
+                "stats",
+                str(log),
+                "--count-only",
+                "--agent",
+                "agent.*",
+                "--exclude-rule",
+                _NO_RULE,
+            ]
+        )
+        assert rc == 0
+        assert out.splitlines() == ["3"]
+
+    def test_counts_sum_across_multiple_logs(self, tmp_path: Path) -> None:
+        a = self._log(tmp_path / "a.jsonl")
+        b = _write_log(
+            tmp_path / "b.jsonl", [("kb_lookup", Verdict.ALLOW, "allow-kb")]
+        )
+        rc, out, _ = _run(["audit", "stats", str(a), str(b), "--count-only"])
+        assert rc == 0
+        assert out.splitlines() == ["5"]
+
+    def test_fail_over_gate_still_applies_after_the_count(
+        self, tmp_path: Path
+    ) -> None:
+        # deny+review share is 50%, so a 40% threshold trips the gate.
+        log = self._log(tmp_path / "t.jsonl")
+        rc, out, _ = _run(
+            ["audit", "stats", str(log), "--count-only", "--fail-over", "40"]
+        )
+        assert rc == 5
+        # the count is printed *before* the gate decides the exit code
+        assert out.splitlines() == ["4"]
+
+    def test_fail_over_under_threshold_exits_zero(self, tmp_path: Path) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        rc, out, _ = _run(
+            ["audit", "stats", str(log), "--count-only", "--fail-over", "50"]
+        )
+        assert rc == 0
+        assert out.splitlines() == ["4"]
+
+    def test_missing_file_still_exits_2(self, tmp_path: Path) -> None:
+        rc, out, err = _run(
+            ["audit", "stats", str(tmp_path / "nope.jsonl"), "--count-only"]
+        )
+        assert rc == 2
+        assert out == ""
+        assert "not found" in err
+
+    def test_count_only_with_json_is_argparse_error_exit_2(
+        self, tmp_path: Path
+    ) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        with pytest.raises(SystemExit) as exc:
+            _run(["audit", "stats", str(log), "--count-only", "--json"])
+        assert exc.value.code == 2
+
+    def test_count_only_with_csv_is_argparse_error_exit_2(
+        self, tmp_path: Path
+    ) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        with pytest.raises(SystemExit) as exc:
+            _run(["audit", "stats", str(log), "--count-only", "--csv"])
+        assert exc.value.code == 2
+
+    def test_count_only_with_csv_section_still_requires_csv(
+        self, tmp_path: Path
+    ) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        rc, out, err = _run(
+            [
+                "audit",
+                "stats",
+                str(log),
+                "--count-only",
+                "--csv-section",
+                "tools",
+            ]
+        )
+        assert rc == 2
+        assert out == ""
+        assert "--csv-section requires --csv" in err
+
+    def test_omitting_the_flag_leaves_the_summary_unchanged(
+        self, tmp_path: Path
+    ) -> None:
+        log = self._log(tmp_path / "t.jsonl")
+        rc, out, _ = _run(["audit", "stats", str(log)])
+        assert rc == 0
+        assert "records:     4" in out
