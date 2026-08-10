@@ -54,6 +54,7 @@ __all__ = [
     "AuditRecord",
     "ChainVerifyResult",
     "JsonlAuditWriter",
+    "audit_allow_share",
     "audit_flagged_share",
     "audit_stats_csv",
     "audit_stats_dict",
@@ -692,6 +693,27 @@ def audit_flagged_share(records: Iterable[AuditRecord]) -> float:
         if r.decision.verdict in (Verdict.DENY, Verdict.REVIEW)
     )
     return 100.0 * flagged / total
+
+
+def audit_allow_share(records: Iterable[AuditRecord]) -> float:
+    """Return the ``allow`` share as a percentage.
+
+    The mirror of :func:`audit_flagged_share`: this is the same figure rendered
+    as the ``allow`` line by :func:`summarize_audit` and stored under
+    ``verdicts.allow.pct`` by :func:`audit_stats_dict`, exposed on its own so
+    the ``apg audit stats --fail-under`` CI gate (R45) can threshold it without
+    re-rendering. The value is an exact (unrounded) percentage in
+    ``[0.0, 100.0]``; an empty log yields ``0.0``.
+
+    Pure (no I/O), mirroring the other ``audit stats`` helpers, so the
+    subcommand and tests can drive it directly.
+    """
+    recs = list(records)
+    total = len(recs)
+    if total == 0:
+        return 0.0
+    allowed = sum(1 for r in recs if r.decision.verdict is Verdict.ALLOW)
+    return 100.0 * allowed / total
 
 
 def summarize_audit(

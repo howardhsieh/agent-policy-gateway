@@ -35,6 +35,7 @@ from agent_policy_gateway.audit import (
     _NO_RULE,
     AuditRecord,
     JsonlAuditWriter,
+    audit_allow_share,
     audit_flagged_share,
     read_audit,
 )
@@ -2404,3 +2405,190 @@ class TestAuditStatsCountOnly:
         rc, out, _ = _run(["audit", "stats", str(log)])
         assert rc == 0
         assert "records:     4" in out
+
+
+# --- R45: --fail-under allow-share gate ---------------------------------------
+
+
+class TestAuditAllowShare:
+    """The pure ``audit_allow_share`` helper mirrors ``audit_flagged_share``."""
+
+    def test_empty_log_is_zero(self) -> None:
+        assert audit_allow_share([]) == 0.0
+
+    def test_share_is_exact_unrounded(self, tmp_path: Path) -> None:
+        # 1 allow out of 3 records => 33.333...%, not the printed 33.3.
+        log = _write_log(
+            tmp_path / "x.jsonl",
+            [
+                ("a", Verdict.ALLOW, None),
+                ("b", Verdict.DENY, "r"),
+                ("c", Verdict.DENY, "r"),
+            ],
+        )
+        share = audit_allow_share(list(read_audit(str(log))))
+        assert abs(share - 100.0 / 3.0) < 1e-9
+
+    def test_matches_summary(self, tmp_path: Path) -> None:
+        log = _flagged_log(tmp_path / "x.jsonl")
+        assert audit_allow_share(list(read_audit(str(log)))) == 50.0
+
+    def test_complements_flagged_share(self, tmp_path: Path) -> None:
+        # On a log with no ``redact`` records every verdict is either allow or
+        # flagged, so the two shares sum to 100.
+        log = _flagged_log(tmp_path / "x.jsonl")
+        records = list(read_audit(str(log)))
+        total = audit_allow_share(records) + audit_flagged_share(records)
+        assert abs(total - 100.0) < 1e-9
+
+    def test_all_denied_is_zero(self, tmp_path: Path) -> None:
+        log = _write_log(
+            tmp_path / "x.jsonl",
+            [("a", Verdict.DENY, "r"), ("b", Verdict.REVIEW, "r")],
+        )
+        assert audit_allow_share(list(read_audit(str(log)))) == 0.0
+
+
+class TestFailUnderGate:
+    def test_default_no_flag_exits_zero(self, tmp_path: Path) -> None:
+        log = _flagged_log(tmp_path / "x.jsonl")
+        rc, out, _ = _run(["audit", "stats", str(log)])
+        assert rc == 0
+        assert "allow      2  (50.0%)" in out
+
+    def test_under_threshold_exits_6_and_prints_summary(
+        self, tmp_path: Path
+    ) -> None:
+        log = _flagged_log(tmp_path / "x.jsonl")
+        rc, out, _ = _run(["audit", "stats", str(log), "--fail-under", "60"])
+        assert rc == 6
+        assert "allow      2  (50.0%)" in out  # summary still printed
+
+    def test_at_threshold_exits_zero(self, tmp_path: Path) -> None:
+        log = _flagged_log(tmp_path / "x.jsonl")
+        rc, _, _ = _run(["audit", "stats", str(log), "--fail-under", "50"])
+        assert rc == 0
+
+    def test_over_threshold_exits_zero(self, tmp_path: Path) -> None:
+        log = _flagged_log(tmp_path / "x.jsonl")
+        rc, _, _ = _run(["audit", "stats", str(log), "--fail-under", "40"])
+        assert rc == 0
+
+    def test_exact_share_beats_rounded_print(self, tmp_path: Path) -> None:
+        # 2/3 = 66.666% prints as 66.7 but must still trip a 66.7 threshold.
+        log = _write_log(
+            tmp_path / "x.jsonl",
+            [
+                ("a", Verdict.ALLOW, None),
+                ("b", Verdict.ALLOW, None),
+                ("c", Verdict.DENY, "r"),
+            ],
+        )
+        rc, out, _ = _run(["audit", "stats", str(log), "--fail-under", "66.7"])
+        assert "(66.7%)" in out
+        assert rc == 6
+
+    def test_empty_log_trips_positive_threshold(self, tmp_path: Path) -> None:
+        empty = tmp_path / "empty.jsonl"
+        empty.write_text("")
+        rc, out, _ = _run(["audit", "stats", str(empty), "--fail-under", "50"])
+        assert rc == 6
+        assert "records:     0" in out
+
+    def test_empty_log_passes_zero_threshold(self, tmp_path: Path) -> None:
+        empty = tmp_path / "empty.jsonl"
+        empty.write_text("")
+        rc, _, _ = _run(["audit", "stats", str(empty), "--fail-under", "0"])
+        assert rc == 0
+
+    def test_json_branch_is_also_gated(self, tmp_path: Path) -> None:
+        log = _flagged_log(tmp_path / "x.jsonl")
+        rc, out, _ = _run(
+            ["audit", "stats", str(log), "--json", "--fail-under", "60"]
+        )
+        assert rc == 6
+        assert json.loads(out)["verdicts"]["allow"]["count"] == 2
+
+    def test_csv_branch_is_also_gated(self, tmp_path: Path) -> None:
+        log = _flagged_log(tmp_path / "x.jsonl")
+        rc, out, _ = _run(
+            ["audit", "stats", str(log), "--csv", "--fail-under", "60"]
+        )
+        assert rc == 6
+        assert out.splitlines()[0].startswith("verdict,")
+
+    def test_count_only_branch_is_also_gated(self, tmp_path: Path) -> None:
+        log = _flagged_log(tmp_path / "x.jsonl")
+        rc, out, _ = _run(
+            ["audit", "stats", str(log), "--count-only", "--fail-under", "60"]
+        )
+        assert rc == 6
+        assert out.splitlines() == ["4"]
+
+    def test_composes_with_verdict_filter(self, tmp_path: Path) -> None:
+        log = _flagged_log(tmp_path / "x.jsonl")
+        # Restrict to allow-only: 100% allow, even a high threshold passes.
+        rc, _, _ = _run(
+            ["audit", "stats", str(log), "--verdict", "allow", "--fail-under", "99"]
+        )
+        assert rc == 0
+        # Restrict to deny-only: 0% allow, any positive threshold trips.
+        rc, _, _ = _run(
+            ["audit", "stats", str(log), "--verdict", "deny", "--fail-under", "1"]
+        )
+        assert rc == 6
+
+    def test_composes_with_tool_filter(self, tmp_path: Path) -> None:
+        log = _flagged_log(tmp_path / "x.jsonl")
+        rc, _, _ = _run(
+            ["audit", "stats", str(log), "--tool", "read_file", "--fail-under", "99"]
+        )
+        assert rc == 0
+
+    def test_fail_over_takes_precedence_when_both_trip(
+        self, tmp_path: Path
+    ) -> None:
+        # 50% flagged / 50% allow: over 40 *and* under 60, so both gates trip.
+        log = _flagged_log(tmp_path / "x.jsonl")
+        rc, _, _ = _run(
+            [
+                "audit",
+                "stats",
+                str(log),
+                "--fail-over",
+                "40",
+                "--fail-under",
+                "60",
+            ]
+        )
+        assert rc == 5
+
+    def test_fail_under_wins_when_only_it_trips(self, tmp_path: Path) -> None:
+        log = _flagged_log(tmp_path / "x.jsonl")
+        rc, _, _ = _run(
+            [
+                "audit",
+                "stats",
+                str(log),
+                "--fail-over",
+                "60",
+                "--fail-under",
+                "60",
+            ]
+        )
+        assert rc == 6
+
+    def test_both_flags_within_band_exits_zero(self, tmp_path: Path) -> None:
+        log = _flagged_log(tmp_path / "x.jsonl")
+        rc, _, _ = _run(
+            [
+                "audit",
+                "stats",
+                str(log),
+                "--fail-over",
+                "60",
+                "--fail-under",
+                "40",
+            ]
+        )
+        assert rc == 0

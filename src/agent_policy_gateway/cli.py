@@ -62,6 +62,7 @@ from agent_policy_gateway.audit import (
     CSV_SECTIONS,
     AuditFormatError,
     AuditRecord,
+    audit_allow_share,
     audit_flagged_share,
     audit_stats_dict,
     audit_stats_section_csv,
@@ -568,6 +569,41 @@ def _fail_over_code(records: list[AuditRecord], threshold: float | None) -> int:
     return 5 if audit_flagged_share(records) > threshold else 0
 
 
+def _fail_under_code(records: list[AuditRecord], threshold: float | None) -> int:
+    """Exit code for the ``--fail-under`` CI gate (R45).
+
+    The mirror of :func:`_fail_over_code`: returns ``6`` when ``threshold`` is
+    set and the ``allow`` share falls strictly below it, otherwise ``0``. Like
+    ``--fail-over`` the comparison uses the exact (unrounded) share, here from
+    :func:`audit_allow_share`, so a value just under a printed, one-decimal
+    figure still trips the gate. ``threshold`` of ``None`` (no ``--fail-under``)
+    always yields ``0``.
+
+    Note the deliberate asymmetry at the empty log: its allow share is ``0.0``,
+    so an empty log trips any positive ``--fail-under`` threshold (an audit log
+    with nothing allowed *is* the over-restrictive case this gate exists to
+    catch), whereas ``--fail-over`` is never over on an empty log. Use
+    ``--fail-under 0`` if an empty log must stay green.
+    """
+    if threshold is None:
+        return 0
+    return 6 if audit_allow_share(records) < threshold else 0
+
+
+def _gate_code(records: list[AuditRecord], args: argparse.Namespace) -> int:
+    """Combined exit code for the ``--fail-over``/``--fail-under`` gates.
+
+    Both gates are off by default, so with neither flag this is always ``0``
+    and exit codes are unchanged. They may be combined to bracket an acceptable
+    band of policy strictness; when both trip, ``--fail-over`` (exit ``5``)
+    takes precedence over ``--fail-under`` (exit ``6``).
+    """
+    over = _fail_over_code(records, args.fail_over)
+    if over:
+        return over
+    return _fail_under_code(records, args.fail_under)
+
+
 def _cmd_audit_stats(args: argparse.Namespace) -> int:
     """Summarize one or more JSONL audit logs. Exit codes mirror ``apg-replay``:
     ``0`` ok, ``2`` missing file (or ``-`` mixed with paths), ``3`` malformed
@@ -650,7 +686,7 @@ def _cmd_audit_stats(args: argparse.Namespace) -> int:
     # first, then the gate decides the exit code (same contract as --csv/--json).
     if args.count_only:
         print(len(records))
-        return _fail_over_code(records, args.fail_over)
+        return _gate_code(records, args)
     if args.csv:
         # R42: --csv-section picks which breakdown to emit; "verdicts" (the
         # default) is delegated to the R40 renderer, so plain --csv is
@@ -666,7 +702,7 @@ def _cmd_audit_stats(args: argparse.Namespace) -> int:
             top_agents=args.top_agents,
         ):
             print(line)
-        return _fail_over_code(records, args.fail_over)
+        return _gate_code(records, args)
     if args.json:
         stats = audit_stats_dict(
             records,
@@ -677,7 +713,7 @@ def _cmd_audit_stats(args: argparse.Namespace) -> int:
             top_agents=args.top_agents,
         )
         print(json.dumps(stats, indent=2))
-        return _fail_over_code(records, args.fail_over)
+        return _gate_code(records, args)
     for line in summarize_audit(
         records,
         source=source,
@@ -687,7 +723,7 @@ def _cmd_audit_stats(args: argparse.Namespace) -> int:
         top_agents=args.top_agents,
     ):
         print(line)
-    return _fail_over_code(records, args.fail_over)
+    return _gate_code(records, args)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -916,7 +952,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Print only the number of records left after filtering (a single "
             "integer line) instead of the summary, for shell pipelines. "
-            "Composes with every filter and with --fail-over (the count is "
+            "Composes with every filter and with --fail-over/--fail-under "
+            "(the count is "
             "printed, then the gate sets the exit code). Mutually exclusive "
             "with --json and --csv."
         ),
@@ -1048,6 +1085,20 @@ def _build_parser() -> argparse.ArgumentParser:
             "percent; at or under PCT exit 0. Off by default, so omitting it "
             "leaves exit codes unchanged. Composes with the filters above; an "
             "empty log is never over threshold."
+        ),
+    )
+    stats_p.add_argument(
+        "--fail-under",
+        type=float,
+        default=None,
+        metavar="PCT",
+        help=(
+            "CI gate: exit 6 (after still printing the summary) when the "
+            "allow share of the filtered records falls below PCT percent; at "
+            "or over PCT exit 0. The mirror of --fail-over, catching an "
+            "over-restrictive policy. Off by default. May be combined with "
+            "--fail-over, which wins (exit 5) when both trip. An empty log has "
+            "a 0.0 allow share and so trips any positive threshold."
         ),
     )
     stats_p.set_defaults(func=_cmd_audit_stats)
