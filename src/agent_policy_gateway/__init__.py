@@ -14,6 +14,7 @@ from agent_policy_gateway.audit import (
     AuditRecord,
     ChainVerifyResult,
     JsonlAuditWriter,
+    audit_diff_dict,
     audit_stats_csv,
     audit_stats_dict,
     audit_stats_section_csv,
@@ -30,6 +31,7 @@ from agent_policy_gateway.audit import (
     read_audit,
     replay_main,
     summarize_audit,
+    summarize_audit_diff,
     verify_chain,
 )
 from agent_policy_gateway.bench import (
@@ -153,6 +155,7 @@ __all__ = [
     "dispatch_openai_tool_call",
     "dispatch_openai_tool_calls",
     "flows_to",
+    "audit_diff_dict",
     "audit_stats_csv",
     "audit_stats_dict",
     "audit_stats_section_csv",
@@ -179,6 +182,7 @@ __all__ = [
     "read_audit",
     "replay_main",
     "summarize_audit",
+    "summarize_audit_diff",
     "verify_chain",
     "results_to_json",
     "run_default_suite",

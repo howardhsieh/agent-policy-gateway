@@ -55,6 +55,7 @@ __all__ = [
     "ChainVerifyResult",
     "JsonlAuditWriter",
     "audit_allow_share",
+    "audit_diff_dict",
     "audit_flagged_share",
     "audit_stats_csv",
     "audit_stats_dict",
@@ -73,6 +74,7 @@ __all__ = [
     "read_audit_stdin",
     "replay_main",
     "summarize_audit",
+    "summarize_audit_diff",
     "verify_chain",
 ]
 
@@ -1000,6 +1002,276 @@ def audit_stats_section_csv(
         lines.append(f"{_csv_field(name)},{count},{_pct(count, total)}")
     return lines
 
+
+
+# --- audit log diff (R47) -----------------------------------------------------
+
+
+#: Axes ``audit_diff_dict`` reports movement on, mapped to the extractor that
+#: produces the label each record contributes. The sentinel buckets
+#: (``_NO_RULE`` / ``_NO_AGENT``) are reused verbatim, so the unnamed traffic
+#: is diffed under the same labels the stats renderers already print.
+_DIFF_AXES: dict[str, Callable[[AuditRecord], str]] = {
+    "rules": lambda r: r.decision.rule_id or _NO_RULE,
+    "tools": lambda r: r.call.tool_name,
+    "agents": lambda r: r.call.agent_id or _NO_AGENT,
+}
+
+
+def _delta_pct(old_pct: str, new_pct: str) -> float:
+    """Signed one-decimal difference between two :func:`_pct` strings.
+
+    The delta is computed from the *printed* (already one-decimal) shares
+    rather than the exact ratios, so every rendered line is self-consistent:
+    the reported delta is exactly ``new - old`` of the two numbers next to it.
+    (The CI gates in :func:`audit_flagged_share` / :func:`audit_allow_share`
+    deliberately keep full precision -- they threshold, they do not display.)
+    Negative zero is normalized to ``0.0`` so a no-change line prints ``+0.0``.
+    """
+    delta = round(float(new_pct) - float(old_pct), 1)
+    return 0.0 if delta == 0 else delta
+
+
+def _ranks(counter: Counter[str]) -> dict[str, int]:
+    """1-based rank per name, ordered like :func:`_top` (count desc, name asc)."""
+    ordered = sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))
+    return {name: i for i, (name, _count) in enumerate(ordered, start=1)}
+
+
+def _axis_movement(
+    old_counts: Counter[str],
+    new_counts: Counter[str],
+    *,
+    top_n: int,
+) -> list[dict[str, Any]]:
+    """Entries that appeared, disappeared, or moved most on one axis.
+
+    Each entry carries both sides' hit counts and 1-based ranks, the signed
+    count delta, and a ``status`` of ``"added"`` (absent from the old log),
+    ``"removed"`` (absent from the new log), or ``"moved"``. ``rank_delta`` is
+    ``old_rank - new_rank`` -- **positive means the entry climbed** the ranked
+    list -- and is ``None`` whenever one side is missing, since a rank cannot
+    be subtracted from nothing.
+
+    Entries whose count *and* rank are identical on both sides are dropped, so
+    two identical logs produce an empty list on every axis. The survivors are
+    ordered by how much they moved: appearances/disappearances first, then the
+    largest absolute rank change, then the largest absolute count change, ties
+    broken by name ascending. The first ``top_n`` are returned (``top_n <= 0``
+    yields an empty list).
+    """
+    old_ranks = _ranks(old_counts)
+    new_ranks = _ranks(new_counts)
+    entries: list[dict[str, Any]] = []
+    for name in sorted(set(old_counts) | set(new_counts)):
+        old_count = old_counts.get(name, 0)
+        new_count = new_counts.get(name, 0)
+        old_rank = old_ranks.get(name)
+        new_rank = new_ranks.get(name)
+        if old_count == new_count and old_rank == new_rank:
+            continue
+        if old_rank is None:
+            status = "added"
+        elif new_rank is None:
+            status = "removed"
+        else:
+            status = "moved"
+        rank_delta = (
+            None
+            if old_rank is None or new_rank is None
+            else old_rank - new_rank
+        )
+        entries.append(
+            {
+                "name": name,
+                "status": status,
+                "old_count": old_count,
+                "new_count": new_count,
+                "delta": new_count - old_count,
+                "old_rank": old_rank,
+                "new_rank": new_rank,
+                "rank_delta": rank_delta,
+            }
+        )
+    entries.sort(
+        key=lambda e: (
+            0 if e["status"] == "moved" else -1,
+            -abs(e["rank_delta"] or 0),
+            -abs(e["delta"]),
+            e["name"],
+        )
+    )
+    return entries[: max(top_n, 0)]
+
+
+def audit_diff_dict(
+    old: Iterable[AuditRecord],
+    new: Iterable[AuditRecord],
+    *,
+    top_n: int = 5,
+) -> dict[str, Any]:
+    """Compare two audit logs and return the differences as a dict.
+
+    The audit-log counterpart to ``apg policy diff``: where that command
+    compares two policies by the decisions they *would* make, this compares two
+    logs by the decisions that were actually recorded. The result is
+    JSON-serializable and contains
+
+    * ``records`` -- ``{"old", "new", "delta"}`` record counts,
+    * ``verdicts`` -- one entry per :class:`Verdict` member, in enum order,
+      each ``{"old": {"count", "pct"}, "new": {"count", "pct"},
+      "delta": {"count", "pct"}}``,
+    * ``deny_review`` -- the same shape for the combined flagged share,
+    * ``rules`` / ``tools`` / ``agents`` -- up to ``top_n`` entries per axis
+      describing what appeared, disappeared, or moved most in rank (see
+      :func:`_axis_movement` for the entry shape and ordering).
+
+    Percentages are one-decimal floats matching :func:`audit_stats_dict`, and
+    each ``delta.pct`` is the difference of the two printed shares (see
+    :func:`_delta_pct`). Both sides may be empty: an empty log contributes zero
+    counts and ``0.0`` shares, so a first-ever log diffs cleanly against
+    nothing.
+
+    Pure (no I/O), like every other ``audit stats`` helper, so the
+    ``apg audit diff`` subcommand and tests can drive it directly.
+    """
+    old_recs = list(old)
+    new_recs = list(new)
+    old_total = len(old_recs)
+    new_total = len(new_recs)
+
+    result: dict[str, Any] = {
+        "records": {
+            "old": old_total,
+            "new": new_total,
+            "delta": new_total - old_total,
+        }
+    }
+
+    old_verdicts: Counter[Verdict] = Counter(r.decision.verdict for r in old_recs)
+    new_verdicts: Counter[Verdict] = Counter(r.decision.verdict for r in new_recs)
+
+    def _side(count: int, total: int) -> dict[str, Any]:
+        return {"count": count, "pct": float(_pct(count, total))}
+
+    def _block(old_count: int, new_count: int) -> dict[str, Any]:
+        old_pct = _pct(old_count, old_total)
+        new_pct = _pct(new_count, new_total)
+        return {
+            "old": _side(old_count, old_total),
+            "new": _side(new_count, new_total),
+            "delta": {
+                "count": new_count - old_count,
+                "pct": _delta_pct(old_pct, new_pct),
+            },
+        }
+
+    result["verdicts"] = {
+        verdict.value: _block(
+            old_verdicts.get(verdict, 0), new_verdicts.get(verdict, 0)
+        )
+        for verdict in Verdict
+    }
+    old_flagged = old_verdicts.get(Verdict.DENY, 0) + old_verdicts.get(
+        Verdict.REVIEW, 0
+    )
+    new_flagged = new_verdicts.get(Verdict.DENY, 0) + new_verdicts.get(
+        Verdict.REVIEW, 0
+    )
+    result["deny_review"] = _block(old_flagged, new_flagged)
+
+    for axis, value_of in _DIFF_AXES.items():
+        result[axis] = _axis_movement(
+            Counter(value_of(r) for r in old_recs),
+            Counter(value_of(r) for r in new_recs),
+            top_n=top_n,
+        )
+    return result
+
+
+#: Marker printed in front of each movement entry, by status.
+_DIFF_MARK = {"added": "+", "removed": "-", "moved": " "}
+
+
+def _format_rank(rank: int | None) -> str:
+    """Render a 1-based rank, or ``-`` for a side where the name is absent."""
+    return "-" if rank is None else str(rank)
+
+
+def _movement_lines(entries: list[dict[str, Any]], label: str, cap: int) -> list[str]:
+    """Render one axis of :func:`audit_diff_dict` output as text lines."""
+    lines = [f"top {label} changes (by movement, max {cap}):"]
+    if not entries:
+        lines.append("  (no change)")
+        return lines
+    for e in entries:
+        mark = _DIFF_MARK[e["status"]]
+        lines.append(
+            f"  {mark} {e['name']}: {e['old_count']} -> {e['new_count']} "
+            f"({e['delta']:+d})  rank "
+            f"{_format_rank(e['old_rank'])} -> {_format_rank(e['new_rank'])}"
+        )
+    return lines
+
+
+def summarize_audit_diff(
+    old: Iterable[AuditRecord],
+    new: Iterable[AuditRecord],
+    *,
+    old_source: str | None = None,
+    new_source: str | None = None,
+    top_n: int = 5,
+) -> list[str]:
+    """Render :func:`audit_diff_dict` as a stable plain-text block of lines.
+
+    The text counterpart to :func:`audit_diff_dict`, mirroring
+    :func:`summarize_audit`: a header naming both logs (omitted per side when
+    the source is ``None``), the record-count delta, a fixed per-verdict
+    breakdown in :class:`Verdict` enum order showing ``old -> new`` counts and
+    shares with signed one-decimal deltas, the combined ``deny+review`` line,
+    and up to ``top_n`` movement entries for rules, tools, and agents. Axes
+    with nothing to report print ``(no change)`` rather than an empty block, so
+    the layout is the same height whatever the input.
+
+    Performs no I/O, so the ``apg audit diff`` subcommand and tests can drive
+    it directly.
+    """
+    old_recs = list(old)
+    new_recs = list(new)
+    diff = audit_diff_dict(old_recs, new_recs, top_n=top_n)
+
+    header = "audit log diff"
+    if old_source is not None or new_source is not None:
+        header += f": {old_source or '(none)'} -> {new_source or '(none)'}"
+    lines = [header]
+    rec = diff["records"]
+    lines.append(
+        f"records:     {rec['old']} -> {rec['new']}  ({rec['delta']:+d})"
+    )
+    if rec["old"] == 0 and rec["new"] == 0:
+        lines.append("(both logs are empty - nothing to compare)")
+        return lines
+
+    lines.append("verdicts:")
+    for verdict in Verdict:
+        block = diff["verdicts"][verdict.value]
+        lines.append(
+            f"  {verdict.value:<7s}{block['old']['count']:>5d} -> "
+            f"{block['new']['count']:<5d} ({block['delta']['count']:+d})  "
+            f"{block['old']['pct']:.1f}% -> {block['new']['pct']:.1f}% "
+            f"({block['delta']['pct']:+.1f})"
+        )
+    flagged = diff["deny_review"]
+    lines.append(
+        f"deny+review: {flagged['old']['count']}/{rec['old']} -> "
+        f"{flagged['new']['count']}/{rec['new']}  "
+        f"({flagged['delta']['count']:+d})  "
+        f"{flagged['old']['pct']:.1f}% -> {flagged['new']['pct']:.1f}% "
+        f"({flagged['delta']['pct']:+.1f})"
+    )
+    for axis in _DIFF_AXES:
+        lines.extend(_movement_lines(diff[axis], _SECTION_LABEL[axis], top_n))
+    return lines
 
 
 # --- replay CLI ---------------------------------------------------------------

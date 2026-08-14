@@ -6,7 +6,7 @@ the build if any subcommand or flag documented here drifts from the code.
 
 | Script | Purpose |
 | --- | --- |
-| `apg` | Inspect and validate policies; summarize audit logs. |
+| `apg` | Inspect and validate policies; summarize and diff audit logs. |
 | `apg-replay` | Replay a JSONL audit log as a timeline, or verify its hash chain. |
 | `apg-bench` | Micro-benchmark the decision path. See [Benchmarks](benchmarks.md). |
 
@@ -29,7 +29,7 @@ number without parsing output.
 | `0` | Success — the command ran and found nothing that should fail a build. | every subcommand |
 | `1` | Invalid policy: the file parsed but violates the schema (message is line-located). | `policy validate`, `policy explain`, `policy diff`, `policy lint` |
 | `2` | Missing file, or an unusable flag combination (`--csv-section` without `--csv`; `-` mixed with paths). | every subcommand |
-| `3` | Findings that should fail a build: lint findings, or a malformed audit-log line. | `policy lint`, `audit stats` |
+| `3` | Findings that should fail a build: lint findings, or a malformed audit-log line. | `policy lint`, `audit stats`, `audit diff` |
 | `4` | Broken audit hash chain. Not emitted by `apg`; reserved here because it is shared with `apg-replay --verify`. | `apg-replay --verify` |
 | `5` | CI gate tripped: the deny+review share is **over** `--fail-over`. | `audit stats` |
 | `6` | CI gate tripped: the allow share is **under** `--fail-under`. | `audit stats` |
@@ -127,7 +127,7 @@ is missing, `1` if the policy is malformed.
 
 ## `apg audit`
 
-Inspect JSONL audit logs.
+Inspect JSONL audit logs: summarize one (`stats`) or compare two (`diff`).
 
 ### `apg audit stats`
 
@@ -199,6 +199,46 @@ Combined, they bracket an acceptable band. If both trip, `--fail-over` wins (exi
 
 Exits `0` on success, `2` if a file is missing (or `-` is mixed with paths), `3` if a log
 line is malformed, `5`/`6` per the gates above.
+
+---
+
+### `apg audit diff`
+
+Compare two audit logs the way [`apg policy diff`](#apg-policy-diff) compares two
+policies — but by the decisions that were actually *recorded* rather than the decisions
+a policy would make. Useful for "what changed after we shipped the new policy?" and for
+week-over-week drift reports.
+
+```console
+$ apg audit diff last-week.jsonl this-week.jsonl
+$ apg audit diff before.jsonl after.jsonl --json --top 10
+```
+
+The report has three parts:
+
+1. **Record counts** — `old -> new` with a signed delta.
+2. **Verdict shares** — every verdict in enum order (`allow`, `deny`, `review`,
+   `redact`) with both sides' counts and shares plus signed one-decimal deltas, then the
+   combined `deny+review` line. Each printed delta is exactly the difference of the two
+   printed shares, so the line is self-consistent.
+3. **Movement** — up to N rules, tools and agents that *appeared* (`+`), *disappeared*
+   (`-`), or changed rank, ordered by how much they moved. Rank is the 1-based position
+   in that side's ranked list; `-` means the name is absent from that side. Entries whose
+   count and rank are both unchanged are omitted, so two identical logs report
+   `(no change)` on every axis.
+
+| Argument | Description |
+| --- | --- |
+| `old` (positional) | Path to the baseline JSONL audit log. |
+| `new` (positional) | Path to the newer JSONL audit log. |
+
+| Flag | Argument | Default | Description |
+| --- | --- | --- | --- |
+| `--top` | `N` | `5` | Report at most N moved/added/removed entries per axis (rules, tools, agents). |
+| `--json` | — | off | Emit the structured diff (the `audit_diff_dict` shape, plus the two input paths) instead of the text block. |
+
+Finding changes is the expected outcome, so the command exits `0` whether or not
+anything moved. Exits `2` if either log is missing, `3` if a log line is malformed.
 
 ---
 

@@ -428,3 +428,38 @@ dedicated redactor tool to exist.
   --verify` surfaces that line number with a distinct exit code (4) so a
   caller can tell "chain broken" apart from "file missing" (2) without
   scraping stderr.
+
+## Audit-log diff (R47)
+
+- **Printed deltas are the difference of the printed shares, not of the
+  exact ratios.** `apg audit diff` renders each verdict as
+  `2 -> 1 (-1)  50.0% -> 20.0% (-30.0)`, and the parenthesized share
+  delta is computed from the two one-decimal numbers on the same line
+  rather than from the underlying ratios. A user checking the arithmetic
+  on the page should always get the printed answer; a line that reads
+  `33.3% -> 16.7% (-16.7)` would be internally inconsistent by one tick.
+  The CI gates keep the opposite convention on purpose:
+  `audit_flagged_share` / `audit_allow_share` threshold the *exact*
+  share, because a value a hair over the limit must trip the gate even
+  when it rounds down to the printed figure. Display rounds; decisions
+  do not.
+
+- **Rank movement, not just count movement.** The interesting question
+  after a policy change is rarely "did `send_email` get called four more
+  times" — traffic volume drifts on its own — but "did it become the
+  thing we deny most". So each rules/tools/agents entry carries both
+  sides' 1-based rank in the count-ordered list along with the raw
+  counts, and `rank_delta` is `old_rank - new_rank` so a *positive*
+  number reads as "climbed". Names present on only one side get a
+  `None` rank and an `added` / `removed` status rather than a fake rank
+  of 0, and they sort ahead of every mover: an entirely new rule firing
+  is a bigger signal than an existing one shifting a place. Entries
+  whose count *and* rank are unchanged are dropped, so two identical
+  logs produce an empty movement list instead of a wall of zeros.
+
+- **Diffing is not a gate.** `audit diff` has no `--fail-*` flag and
+  exits `0` whether or not anything moved, mirroring `policy diff`.
+  Thresholding a *delta* needs a policy about acceptable drift that the
+  project does not have yet; until it does, `audit stats --fail-over` /
+  `--fail-under` remain the CI surface, and `diff` stays a reporting
+  tool.

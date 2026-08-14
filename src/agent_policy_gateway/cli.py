@@ -47,6 +47,17 @@ Subcommands
     ``0`` when no findings, ``3`` when findings were reported, ``2`` when the
     file is missing, ``1`` when the policy is malformed.
 
+``apg audit diff <old.jsonl> <new.jsonl> [--json] [--top N]``
+    Compare two audit logs the way ``policy diff`` compares two policies (R47),
+    but by the decisions that were *recorded* rather than the decisions a
+    policy would make: the record-count delta, the per-verdict count and share
+    deltas (signed, one decimal), the combined ``deny+review`` delta, and the
+    rules, tools and agents that appeared, disappeared, or moved most in rank.
+    ``--json`` emits the structured form from
+    :func:`~agent_policy_gateway.audit.audit_diff_dict`. Exit codes match
+    ``audit stats``: ``0`` ok, ``2`` when either log is missing, ``3`` when a
+    log line is malformed.
+
 The module is otherwise pure: the only I/O is reading the policy file (delegated
 to :func:`load_policy`) and writing to stdout/stderr.
 """
@@ -63,6 +74,7 @@ from agent_policy_gateway.audit import (
     AuditFormatError,
     AuditRecord,
     audit_allow_share,
+    audit_diff_dict,
     audit_flagged_share,
     audit_stats_dict,
     audit_stats_section_csv,
@@ -77,6 +89,7 @@ from agent_policy_gateway.audit import (
     read_audit,
     read_audit_stdin,
     summarize_audit,
+    summarize_audit_diff,
 )
 from agent_policy_gateway.core import TaintLabel, ToolCall, Verdict
 from agent_policy_gateway.policy import (
@@ -726,6 +739,58 @@ def _cmd_audit_stats(args: argparse.Namespace) -> int:
     return _gate_code(records, args)
 
 
+# --- ``apg audit diff`` (R47) --------------------------------------------------
+
+
+def _read_log(path: str, label: str) -> tuple[list[AuditRecord] | None, int]:
+    """Read one JSONL audit log, mapping failures to ``audit stats`` exit codes.
+
+    Returns ``(records, 0)`` on success, or ``(None, code)`` where ``code`` is
+    ``2`` for a missing file and ``3`` for a malformed line -- the same codes
+    ``apg-replay`` and ``audit stats`` already use. ``label`` ("old"/"new")
+    only shapes the stderr message.
+    """
+    try:
+        reader = read_audit(path)
+    except FileNotFoundError:
+        print(f"apg: {label} audit log not found: {path}", file=sys.stderr)
+        return None, 2
+    try:
+        return list(reader), 0
+    except AuditFormatError as exc:
+        print(f"apg: {label} log: {exc}", file=sys.stderr)
+        return None, 3
+
+
+def _cmd_audit_diff(args: argparse.Namespace) -> int:
+    """Compare two JSONL audit logs. Exit codes mirror ``audit stats``: ``0``
+    ok, ``2`` a missing file, ``3`` a malformed log line. The diff itself never
+    fails the command -- finding changes is the expected outcome, exactly as
+    ``policy diff`` exits ``0`` whether or not decisions moved."""
+    old_records, code = _read_log(args.old, "old")
+    if old_records is None:
+        return code
+    new_records, code = _read_log(args.new, "new")
+    if new_records is None:
+        return code
+
+    if args.json:
+        diff = audit_diff_dict(old_records, new_records, top_n=args.top)
+        # Echo the inputs so a stored JSON diff is self-describing, mirroring
+        # the ``source`` key ``audit stats --json`` already emits.
+        print(json.dumps({"old": args.old, "new": args.new, **diff}, indent=2))
+        return 0
+    for line in summarize_audit_diff(
+        old_records,
+        new_records,
+        old_source=args.old,
+        new_source=args.new,
+        top_n=args.top,
+    ):
+        print(line)
+    return 0
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="apg",
@@ -1102,6 +1167,40 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     stats_p.set_defaults(func=_cmd_audit_stats)
+
+    diff_log_p = audit_sub.add_parser(
+        "diff",
+        help="Compare two JSONL audit logs.",
+        description=(
+            "Compare two JSONL audit logs: the record-count delta, the "
+            "per-verdict count and share deltas (signed, one decimal), the "
+            "combined deny+review delta, and the rules, tools and agents that "
+            "appeared, disappeared, or moved most in rank. Exits 0 whether or "
+            "not anything changed, 2 if either log is missing, 3 if a log line "
+            "is malformed."
+        ),
+    )
+    diff_log_p.add_argument("old", help="Path to the baseline JSONL audit log.")
+    diff_log_p.add_argument("new", help="Path to the newer JSONL audit log.")
+    diff_log_p.add_argument(
+        "--top",
+        type=int,
+        default=5,
+        metavar="N",
+        help=(
+            "Report at most N moved/added/removed entries per axis "
+            "(rules, tools, agents). Default 5."
+        ),
+    )
+    diff_log_p.add_argument(
+        "--json",
+        action="store_true",
+        help=(
+            "Emit the diff as JSON (the audit_diff_dict structure, plus the "
+            "two input paths) instead of the plain-text block."
+        ),
+    )
+    diff_log_p.set_defaults(func=_cmd_audit_diff)
 
     return parser
 
