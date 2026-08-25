@@ -30,6 +30,11 @@ dev = [
     "ruff>=0.4",
     "mypy>=1.10",
 ]
+# The AgentDojo benchmark integration (R49b): dev/eval-only, never a runtime
+# dependency of the adapters, which are duck-typed against its API.
+agentdojo = [
+    "agentdojo>=0.1.35",
+]
 docs = [
     "mkdocs>=1.5",
     "mkdocs-material>=9.5",
@@ -68,4 +73,10 @@ files = ["src/agent_policy_gateway"]
 # on a third-party import that is out of our control.
 [[tool.mypy.overrides]]
 module = "yaml"
+ignore_missing_imports = true
+
+# The AgentDojo benchmark ships no py.typed marker; the lazy import in
+# agentdojo_suite.gate_suite must not fail the typed-API guard.
+[[tool.mypy.overrides]]
+module = "agentdojo.*"
 ignore_missing_imports = true

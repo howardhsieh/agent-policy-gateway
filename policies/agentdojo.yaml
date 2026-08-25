@@ -1,0 +1,194 @@
+version: 1
+name: agentdojo-baseline
+description: |
+  Baseline defense for the AgentDojo benchmark suites (R49b). One deny rule
+  per external sink in the cross-suite union (banking, slack, travel,
+  workspace of benchmark v1.2.1), each firing only when the call's input
+  label carries the agentdojo:untrusted source — i.e. after the session has
+  read content an attacker can author (files, transaction subjects,
+  webpages, reviews, emails, calendar bodies; see
+  agent_policy_gateway.agentdojo_suite). Untainted calls match no rule and
+  fall through to the gateway's default-allow, so benign episodes that
+  never touch untrusted content keep full utility. The sink list is kept in
+  lockstep with agentdojo_suite._EXTERNAL_SINKS by the test suite.
+rules:
+  # ---- banking -----------------------------------------------------------
+  - id: deny-untrusted-to-send_money
+    when:
+      tool: send_money
+      taint:
+        any_of: [agentdojo:untrusted]
+    effect:
+      action: deny
+      reason: Untrusted AgentDojo content may not drive send_money.
+  - id: deny-untrusted-to-schedule_transaction
+    when:
+      tool: schedule_transaction
+      taint:
+        any_of: [agentdojo:untrusted]
+    effect:
+      action: deny
+      reason: Untrusted AgentDojo content may not drive schedule_transaction.
+  - id: deny-untrusted-to-update_scheduled_transaction
+    when:
+      tool: update_scheduled_transaction
+      taint:
+        any_of: [agentdojo:untrusted]
+    effect:
+      action: deny
+      reason: Untrusted AgentDojo content may not drive update_scheduled_transaction.
+  - id: deny-untrusted-to-update_password
+    when:
+      tool: update_password
+      taint:
+        any_of: [agentdojo:untrusted]
+    effect:
+      action: deny
+      reason: Untrusted AgentDojo content may not drive update_password.
+  - id: deny-untrusted-to-update_user_info
+    when:
+      tool: update_user_info
+      taint:
+        any_of: [agentdojo:untrusted]
+    effect:
+      action: deny
+      reason: Untrusted AgentDojo content may not drive update_user_info.
+  # ---- slack -------------------------------------------------------------
+  - id: deny-untrusted-to-send_direct_message
+    when:
+      tool: send_direct_message
+      taint:
+        any_of: [agentdojo:untrusted]
+    effect:
+      action: deny
+      reason: Untrusted AgentDojo content may not drive send_direct_message.
+  - id: deny-untrusted-to-send_channel_message
+    when:
+      tool: send_channel_message
+      taint:
+        any_of: [agentdojo:untrusted]
+    effect:
+      action: deny
+      reason: Untrusted AgentDojo content may not drive send_channel_message.
+  - id: deny-untrusted-to-post_webpage
+    when:
+      tool: post_webpage
+      taint:
+        any_of: [agentdojo:untrusted]
+    effect:
+      action: deny
+      reason: Untrusted AgentDojo content may not drive post_webpage.
+  - id: deny-untrusted-to-invite_user_to_slack
+    when:
+      tool: invite_user_to_slack
+      taint:
+        any_of: [agentdojo:untrusted]
+    effect:
+      action: deny
+      reason: Untrusted AgentDojo content may not drive invite_user_to_slack.
+  - id: deny-untrusted-to-add_user_to_channel
+    when:
+      tool: add_user_to_channel
+      taint:
+        any_of: [agentdojo:untrusted]
+    effect:
+      action: deny
+      reason: Untrusted AgentDojo content may not drive add_user_to_channel.
+  - id: deny-untrusted-to-remove_user_from_slack
+    when:
+      tool: remove_user_from_slack
+      taint:
+        any_of: [agentdojo:untrusted]
+    effect:
+      action: deny
+      reason: Untrusted AgentDojo content may not drive remove_user_from_slack.
+  # ---- travel (send_email / calendar rules shared with workspace) --------
+  - id: deny-untrusted-to-send_email
+    when:
+      tool: send_email
+      taint:
+        any_of: [agentdojo:untrusted]
+    effect:
+      action: deny
+      reason: Untrusted AgentDojo content may not drive send_email.
+  - id: deny-untrusted-to-reserve_hotel
+    when:
+      tool: reserve_hotel
+      taint:
+        any_of: [agentdojo:untrusted]
+    effect:
+      action: deny
+      reason: Untrusted AgentDojo content may not drive reserve_hotel.
+  - id: deny-untrusted-to-reserve_restaurant
+    when:
+      tool: reserve_restaurant
+      taint:
+        any_of: [agentdojo:untrusted]
+    effect:
+      action: deny
+      reason: Untrusted AgentDojo content may not drive reserve_restaurant.
+  - id: deny-untrusted-to-reserve_car_rental
+    when:
+      tool: reserve_car_rental
+      taint:
+        any_of: [agentdojo:untrusted]
+    effect:
+      action: deny
+      reason: Untrusted AgentDojo content may not drive reserve_car_rental.
+  - id: deny-untrusted-to-create_calendar_event
+    when:
+      tool: create_calendar_event
+      taint:
+        any_of: [agentdojo:untrusted]
+    effect:
+      action: deny
+      reason: Untrusted AgentDojo content may not drive create_calendar_event.
+  - id: deny-untrusted-to-cancel_calendar_event
+    when:
+      tool: cancel_calendar_event
+      taint:
+        any_of: [agentdojo:untrusted]
+    effect:
+      action: deny
+      reason: Untrusted AgentDojo content may not drive cancel_calendar_event.
+  # ---- workspace ---------------------------------------------------------
+  - id: deny-untrusted-to-share_file
+    when:
+      tool: share_file
+      taint:
+        any_of: [agentdojo:untrusted]
+    effect:
+      action: deny
+      reason: Untrusted AgentDojo content may not drive share_file.
+  - id: deny-untrusted-to-add_calendar_event_participants
+    when:
+      tool: add_calendar_event_participants
+      taint:
+        any_of: [agentdojo:untrusted]
+    effect:
+      action: deny
+      reason: Untrusted AgentDojo content may not drive add_calendar_event_participants.
+  - id: deny-untrusted-to-reschedule_calendar_event
+    when:
+      tool: reschedule_calendar_event
+      taint:
+        any_of: [agentdojo:untrusted]
+    effect:
+      action: deny
+      reason: Untrusted AgentDojo content may not drive reschedule_calendar_event.
+  - id: deny-untrusted-to-delete_email
+    when:
+      tool: delete_email
+      taint:
+        any_of: [agentdojo:untrusted]
+    effect:
+      action: deny
+      reason: Untrusted AgentDojo content may not drive delete_email.
+  - id: deny-untrusted-to-delete_file
+    when:
+      tool: delete_file
+      taint:
+        any_of: [agentdojo:untrusted]
+    effect:
+      action: deny
+      reason: Untrusted AgentDojo content may not drive delete_file.

@@ -497,3 +497,37 @@ dedicated redactor tool to exist.
   through `__getattr__`, so the gated runtime is a drop-in wherever
   the real runtime was used. The real-package wiring lands with R49b
   behind an optional extra.
+
+## AgentDojo suite wiring (R49b)
+
+- **Reader classification is vector-derived and shipped as data.** A tool
+  is an *untrusted reader* when its return value can carry
+  attacker-authored text, determined from where each suite's injection
+  vectors live in the benchmark's environment data (`data/suites/*`):
+  banking places vectors in files and incoming-transaction subjects,
+  slack in webpages and an externally-created channel name (plus message
+  bodies authored by other workspace users), travel in
+  hotel/restaurant/car-rental reviews, and workspace in calendar event
+  bodies, cloud-drive files, and received emails. The tables are plain
+  frozensets in `agentdojo_suite.py` — the policy knob R50 will measure —
+  and alternative classifications go straight to
+  `wrap_agentdojo_runtime` without touching the module. The integration
+  tests assert the tables are subsets of the real suites' tools, so an
+  upstream rename fails loudly.
+- **One shared deny surface, deduplicated across suites.**
+  `policies/agentdojo.yaml` carries one deny rule per sink in the
+  cross-suite union (22 rules; `send_email` and the calendar mutations
+  appear in both travel and workspace but get one rule each), every rule
+  conditioned on `taint.any_of: [agentdojo:untrusted]`. Untainted calls
+  match nothing and fall through to default-allow, so episodes that never
+  read untrusted content keep full utility — the utility cost of the
+  defense comes only from tasks that must read injectable content before
+  a sink (e.g. banking's "pay this bill" reads the bill file first), which
+  is precisely the tension R50 quantifies. The test suite keeps the YAML
+  in lockstep with `_EXTERNAL_SINKS`.
+- **`gate_suite` imports agentdojo only to build a runtime.** Tables and
+  helpers stay importable without the benchmark; the lazy
+  `FunctionsRuntime` import runs only when no `runtime=` is supplied, and
+  a runtime missing classified tools raises (version-drift signal, tables
+  target v1.2.1). Audit records default to `agentdojo:<suite>` so
+  multi-suite logs split cleanly on the R36 `--agent` filter.

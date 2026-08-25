@@ -22,14 +22,6 @@ R55 long-horizon stateful adversarial eval harness → R56 APG/Progent/Fides
 comparison. Multi-day items are split into lettered daily sub-items here
 before implementation; work the FIRST unchecked item each run._
 
-- [ ] **R49b. AgentDojo suite wiring.** Against the real `agentdojo` package
-  (dev/extra dependency only): register a task suite's tools through
-  `GatedAgentDojoRuntime`, derive per-suite `ToolTaintSpec`s (untrusted-content
-  readers add an `agentdojo:untrusted` source; external sinks are the deny
-  surface) and an example `policies/agentdojo.yaml`; a runnable
-  `examples/agentdojo/` entry point demonstrating one benign task passing and
-  one injection case blocked. Integration tests skipped when `agentdojo` is
-  not importable.
 - [ ] **R49c. Attack-case plumbing.** Drive AgentDojo's attack/injection
   machinery through the gated runtime end-to-end (no LLM: scripted/ground-truth
   agent first), recording per-episode outcomes (task success, injection
@@ -71,6 +63,8 @@ before implementation; work the FIRST unchecked item each run._
 ---
 
 ## Done
+
+- **R49b. AgentDojo suite wiring.** — completed 2026-08-25 (second run of the day). New `agentdojo_suite.py` wiring the R49a adapter to the four default v1.2.1 suites (banking/slack/travel/workspace): per-suite frozenset tables classify *untrusted readers* (returns can carry attacker-authored text, derived from where each suite's injection vectors live in the benchmark's environment data; each adds the `agentdojo:untrusted` source via a `ToolTaintSpec`) and *external sinks* (the deny surface), plus per-sink `resource_args`. `gate_suite(gateway, suite, *, runtime=None, agent_id=None)` mounts a suite in one call — lazy-importing `FunctionsRuntime` only when it must build a runtime (the package still ships without the benchmark), stamping audit records `agentdojo:<suite>`, and raising when classified tools are missing from the runtime (upstream-drift signal). New `policies/agentdojo.yaml`: one deny rule per sink in the cross-suite union (22 rules), each conditioned on `taint.any_of: [agentdojo:untrusted]`, untainted calls default-allow — kept in lockstep with the sink tables by the tests. New runnable `examples/agentdojo/` (banking): untainted `send_money` + read-only `user_task_1` pass; the `injection_task_0` exfiltration is refused by `deny-untrusted-to-send_money` with no money moved. New `agentdojo` optional extra; integration tests skipped without the package. New public exports `AGENTDOJO_UNTRUSTED`, `AGENTDOJO_SUITES`, `AGENTDOJO_SUITE_VERSION`, `gate_suite`, `suite_untrusted_readers`, `suite_external_sinks`, `suite_taint_specs`, `suite_resource_args`. 44 new tests (`tests/test_agentdojo_suite.py`). Test count 961 -> 1005 (+44); ruff + mypy + mkdocs-strict clean.
 
 - **R49a. AgentDojo runtime adapter — core wrapper.** — completed 2026-08-25, the first item of the 2026-08-21 plan revision (Phase 1: R49 → R50 AgentDojo benchmark). New `agentdojo_adapter.py` with `GatedAgentDojoRuntime` / `wrap_agentdojo_runtime(gateway, runtime, *, taint_specs=None, resource_args=None, agent_id=None)`, duck-typing AgentDojo's `FunctionsRuntime` surface (`functions`, `register_function`, `run_function(env, function, kwargs, raise_on_error=False) -> (result, error | None)`; other attributes delegate via `__getattr__`) and mediating every `run_function` through `Gateway.execute` — `agentdojo` is *not* a runtime dependency (written against the verified real API, tested with fakes, like R21). Policy refusals surface in AgentDojo's native `"ErrorType: message"` convention — `("", "PolicyDenied: refused by rule '<id>': <reason>")` under `raise_on_error=False`, re-raised under `True` — so a blocked injected call is model-visible feedback and the episode continues (what R50 needs to measure utility under defense). Session-level cumulative taint (AgentDojo's LLM loop can't thread `apg_input_label`): each executed call's `decision.output_label` becomes the next call's input label, denied/errored calls contribute nothing, declassifying specs drop their sources, `taint_label` + `reset_taint()` for per-episode reset — design rationale in `docs/design.md` "AgentDojo adapter (R49a)". Also fixed the 7 broken doc links failing `test_mkdocs_build_clean` under mkdocs-material 9.7 strict link checks (commit `2b8211b`) and gitignored the generated `site/`. New public exports `GatedAgentDojoRuntime`, `wrap_agentdojo_runtime`, `DEFAULT_AGENTDOJO_AGENT_ID`. 23 new tests (`tests/test_agentdojo_adapter.py`). Test count 938 -> 961 (+23); ruff + mypy clean.
 
