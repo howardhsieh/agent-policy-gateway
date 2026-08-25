@@ -13,3 +13,4 @@ venv/
 .env
 .gh-token
 .DS_Store
+site/

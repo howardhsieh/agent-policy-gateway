@@ -11,13 +11,68 @@ Each item must include acceptance criteria so the daily task knows when it's don
 
 ## Up next
 
-_R1–R47 are complete (see Done). The R48 remainder of the R45–R48 batch below was proposed 2026-08-06 when "Up next" was exhausted by R44; R45 shipped 2026-08-10, R46 on 2026-08-11 and R47 on 2026-08-13 — same precedent as the 2026-06-24 (R41–R44), 2026-06-18 (R38–R40), 2026-06-13 (R34–R37), 2026-06-09 (R30–R33), 2026-06-05 (R26–R29), and 2026-06-01 (R22–R25) batches. Work the FIRST unchecked item each run. With the `apg audit stats` filter/render surface now feature-complete, this batch turns the accumulated audit tooling outward: a sibling CI gate for over-restrictive policies, a checked CLI reference page, a log-vs-log diff, and file output for CI artifacts._
+_**Plan revision, 2026-08-21 (Howard).** Audit-stats / CLI-polish items and new
+generic framework adapters are **stopped**; R48 is parked (see "Parked" below).
+The project pivots to three phases: **Phase 1** — R49 AgentDojo adapter → R50
+no-defense vs APG attack-success-rate + utility numbers in `docs/benchmarks/`;
+**Phase 2** — R51 dual-label taint (confidentiality + integrity) → R52
+declarative declassify → R53 chain-level policies (rules over
+provenance/call-history) → R54 Progent symbolic-rule import PoC; **Phase 3** —
+R55 long-horizon stateful adversarial eval harness → R56 APG/Progent/Fides
+comparison. Multi-day items are split into lettered daily sub-items here
+before implementation; work the FIRST unchecked item each run._
 
-- [ ] **R48. `apg audit stats --output FILE`.** Write the rendered summary to a file instead of stdout, so a CI job can attach the artifact and still use the `--fail-over` exit code. Works with every renderer (text/`--json`/`--csv`/`--count-only`); the file is written before the gate is evaluated, an unwritable path exits **2** with a clear stderr message, and omitting the flag leaves stdout byte-for-byte unchanged. Tests cover each renderer's file content matching its stdout form, the fail-over interaction, and the unwritable-path error.
+- [ ] **R49b. AgentDojo suite wiring.** Against the real `agentdojo` package
+  (dev/extra dependency only): register a task suite's tools through
+  `GatedAgentDojoRuntime`, derive per-suite `ToolTaintSpec`s (untrusted-content
+  readers add an `agentdojo:untrusted` source; external sinks are the deny
+  surface) and an example `policies/agentdojo.yaml`; a runnable
+  `examples/agentdojo/` entry point demonstrating one benign task passing and
+  one injection case blocked. Integration tests skipped when `agentdojo` is
+  not importable.
+- [ ] **R49c. Attack-case plumbing.** Drive AgentDojo's attack/injection
+  machinery through the gated runtime end-to-end (no LLM: scripted/ground-truth
+  agent first), recording per-episode outcomes (task success, injection
+  success, refusals) into the JSONL audit log plus a machine-readable episode
+  summary the R50 benchmark can consume.
+- [ ] **R50. Benchmark: no-defense vs APG.** Run the R49c harness across a
+  suite's user tasks × injection tasks under (a) no defense and (b) the APG
+  policy; report attack success rate and task utility for both, written to
+  `docs/benchmarks/agentdojo.md` with the exact reproduction command.
+- [ ] **R51. Dual-label taint: confidentiality + integrity.** Extend the label
+  model so confidentiality (secret data must not reach public sinks) and
+  integrity (untrusted data must not drive privileged actions) are tracked as
+  distinct dimensions with their own propagation and policy clauses;
+  back-compat for existing single-set policies. Split into sub-items when
+  reached.
+- [ ] **R52. Declarative declassify.** Policy-declared declassification
+  (which rule/tool may strip which source, under what conditions) replacing
+  ad-hoc per-spec declassifies. Split when reached.
+- [ ] **R53. Chain-level policies.** Rules that can reference provenance /
+  call-history (e.g. "deny send_email if any web-sourced call precedes it in
+  this session"). Split when reached.
+- [ ] **R54. Progent symbolic-rule import PoC.** Translate a subset of
+  Progent's symbolic policy rules into APG policies. Split when reached.
+- [ ] **R55. Long-horizon stateful adversarial eval harness.** Split when
+  reached.
+- [ ] **R56. APG / Progent / Fides comparison measurement.** Split when
+  reached.
+
+## Parked
+
+- [ ] **R48. `apg audit stats --output FILE`.** _Parked by the 2026-08-21 plan
+  revision (audit-stats/CLI polish stopped)._ Write the rendered summary to a
+  file instead of stdout, so a CI job can attach the artifact and still use the
+  `--fail-over` exit code. Works with every renderer
+  (text/`--json`/`--csv`/`--count-only`); the file is written before the gate
+  is evaluated, an unwritable path exits **2** with a clear stderr message, and
+  omitting the flag leaves stdout byte-for-byte unchanged.
 
 ---
 
 ## Done
+
+- **R49a. AgentDojo runtime adapter — core wrapper.** — completed 2026-08-25, the first item of the 2026-08-21 plan revision (Phase 1: R49 → R50 AgentDojo benchmark). New `agentdojo_adapter.py` with `GatedAgentDojoRuntime` / `wrap_agentdojo_runtime(gateway, runtime, *, taint_specs=None, resource_args=None, agent_id=None)`, duck-typing AgentDojo's `FunctionsRuntime` surface (`functions`, `register_function`, `run_function(env, function, kwargs, raise_on_error=False) -> (result, error | None)`; other attributes delegate via `__getattr__`) and mediating every `run_function` through `Gateway.execute` — `agentdojo` is *not* a runtime dependency (written against the verified real API, tested with fakes, like R21). Policy refusals surface in AgentDojo's native `"ErrorType: message"` convention — `("", "PolicyDenied: refused by rule '<id>': <reason>")` under `raise_on_error=False`, re-raised under `True` — so a blocked injected call is model-visible feedback and the episode continues (what R50 needs to measure utility under defense). Session-level cumulative taint (AgentDojo's LLM loop can't thread `apg_input_label`): each executed call's `decision.output_label` becomes the next call's input label, denied/errored calls contribute nothing, declassifying specs drop their sources, `taint_label` + `reset_taint()` for per-episode reset — design rationale in `docs/design.md` "AgentDojo adapter (R49a)". Also fixed the 7 broken doc links failing `test_mkdocs_build_clean` under mkdocs-material 9.7 strict link checks (commit `2b8211b`) and gitignored the generated `site/`. New public exports `GatedAgentDojoRuntime`, `wrap_agentdojo_runtime`, `DEFAULT_AGENTDOJO_AGENT_ID`. 23 new tests (`tests/test_agentdojo_adapter.py`). Test count 938 -> 961 (+23); ruff + mypy clean.
 
 - **R47. `apg audit diff <old.jsonl> <new.jsonl>`.** — completed 2026-08-13. A new `audit` subcommand comparing two JSONL audit logs by the decisions actually *recorded*, the way `policy diff` compares two policies by the decisions they would make. Reports the record-count delta, the per-verdict counts and shares for every `Verdict` member in enum order with signed one-decimal deltas plus the combined `deny+review` line, and up to `--top N` (default 5) rules/tools/agents per axis that appeared (`+`), disappeared (`-`), or changed rank — rank being the 1-based position in that side's count-ordered list, with `rank_delta = old_rank - new_rank` so a positive number reads as "climbed", one-sided names carrying a `None` rank and an `added`/`removed` status that sorts ahead of every mover, and unchanged entries dropped so identical logs print `(no change)`. Logic lives in two new pure exported helpers in `audit.py`: `audit_diff_dict(old, new, *, top_n=5)` and the `summarize_audit_diff(...)` text renderer, both I/O-free like their `stats` siblings. The subcommand reuses `read_audit` and the existing exit codes (**0** ok — finding changes is the expected outcome, **2** either log missing, **3** a malformed line, both naming the offending side) and supports `--json` (structure plus both input paths) and `--top N`. Displayed share deltas are the difference of the two *printed* shares so each line is self-consistent, deliberately unlike the CI gates which threshold the exact share — recorded in `docs/design.md` along with the rank-movement rationale and why `diff` is a report rather than a gate. 45 new tests (`tests/test_audit_diff.py` plus 3 auto-parametrized in `tests/test_cli_docs.py`). Test count 892 -> 937 (+45); ruff clean. Commit `14f5a8a`.
 

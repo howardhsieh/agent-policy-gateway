@@ -463,3 +463,37 @@ dedicated redactor tool to exist.
   project does not have yet; until it does, `audit stats --fail-over` /
   `--fail-under` remain the CI surface, and `diff` stays a reporting
   tool.
+
+## AgentDojo adapter (R49a)
+
+- **Refusals return, they don't raise.** AgentDojo's pipeline default is
+  `raise_on_error=False`, where a tool failure is returned to the model
+  as an `"ErrorType: message"` string and the episode continues. The
+  gated runtime folds policy refusals into exactly that convention
+  (`"PolicyDenied: refused by rule '<id>': <reason>"`, rule id included
+  so the R50 benchmark can attribute refusals from the transcript
+  alone). A defense that crashed the episode on the first denied call
+  would make utility-under-defense unmeasurable — the model must get
+  the refusal as feedback and be free to try a legitimate path.
+
+- **Taint accumulates per session, not per call.** Every other adapter
+  lets the orchestrating code thread `apg_input_label` through each
+  call; AgentDojo's LLM loop cannot. The wrapper therefore keeps a
+  cumulative label: each executed call's `decision.output_label`
+  (input ∨ adds, minus declassifies) becomes the next call's input
+  label. This is deliberately conservative — once untrusted content
+  enters the conversation, everything after it is treated as
+  potentially influenced, which is precisely the indirect-prompt-
+  injection threat model (A1 in `docs/threat-model.md`). Denied and
+  errored calls contribute nothing (their output never reaches the
+  model), a declassifying spec drops its sources, and `reset_taint()`
+  starts a fresh episode. Finer per-message tracking is Phase 2
+  territory (R51/R53).
+
+- **Duck-typed, like every adapter.** `agentdojo` is not a dependency;
+  the wrapper is written against the verified `FunctionsRuntime`
+  surface (`functions` / `register_function` / `run_function`
+  returning `(result, error | None)`) and everything else delegates
+  through `__getattr__`, so the gated runtime is a drop-in wherever
+  the real runtime was used. The real-package wiring lands with R49b
+  behind an optional extra.

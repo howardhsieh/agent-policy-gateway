@@ -1,5 +1,10 @@
 """agent-policy-gateway: policy enforcement and IFC for AI agent tool calls."""
 
+from agent_policy_gateway.agentdojo_adapter import (
+    DEFAULT_AGENTDOJO_AGENT_ID,
+    GatedAgentDojoRuntime,
+    wrap_agentdojo_runtime,
+)
 from agent_policy_gateway.anthropic_adapter import (
     AnthropicTool,
     AnthropicToolUseError,
@@ -133,7 +138,9 @@ __all__ = [
     "PROVENANCE_KWARG",
     "Provenance",
     "ProvenanceEntry",
+    "DEFAULT_AGENTDOJO_AGENT_ID",
     "DEFAULT_WINDOW_SECONDS",
+    "GatedAgentDojoRuntime",
     "RESOURCE_KWARG",
     "RateLimiter",
     "RedactSpec",
@@ -189,6 +196,7 @@ __all__ = [
     "subsumes",
     "to_json",
     "wrap_anthropic_tools",
+    "wrap_agentdojo_runtime",
     "wrap_langchain_tools",
     "wrap_mcp_session",
     "wrap_mcp_session_async",
