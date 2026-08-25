@@ -319,7 +319,7 @@ Two design notes worth recording:
 
 R14a shipped the release *runbook*; R14b ships the GitHub Actions
 *workflow* that runbook has been pointing at
-([`.github/workflows/publish.yml`](../.github/workflows/publish.yml)).
+(`.github/workflows/publish.yml`).
 The workflow triggers on a `v*` tag push and on
 `workflow_dispatch`; jobs `test → build → publish` run in sequence;
 `publish` uploads via PyPI trusted publishing
