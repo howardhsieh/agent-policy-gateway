@@ -22,11 +22,6 @@ R55 long-horizon stateful adversarial eval harness → R56 APG/Progent/Fides
 comparison. Multi-day items are split into lettered daily sub-items here
 before implementation; work the FIRST unchecked item each run._
 
-- [ ] **R49c. Attack-case plumbing.** Drive AgentDojo's attack/injection
-  machinery through the gated runtime end-to-end (no LLM: scripted/ground-truth
-  agent first), recording per-episode outcomes (task success, injection
-  success, refusals) into the JSONL audit log plus a machine-readable episode
-  summary the R50 benchmark can consume.
 - [ ] **R50. Benchmark: no-defense vs APG.** Run the R49c harness across a
   suite's user tasks × injection tasks under (a) no defense and (b) the APG
   policy; report attack success rate and task utility for both, written to
@@ -63,6 +58,15 @@ before implementation; work the FIRST unchecked item each run._
 ---
 
 ## Done
+
+- [x] **R49c. Attack-case plumbing.** _2026-08-25_ — `agentdojo_episodes.py`:
+  scripted LLM-free episode replay (`ScriptedCall` / `script_from_ground_truth`
+  over duck-typed ground-truth calls, user calls then hijacked-agent attack
+  calls), `run_episode` classifying executed/refused/error per call with
+  session-taint reset, frozen `EpisodeSummary` deriving task success /
+  injection success / refusals, JSONL `write_episodes`/`read_episodes` for
+  R50, audit-log integration test. 27 tests (1005 -> 1032). Commit: (see
+  work-log 2026-08-25, run 3)
 
 - **R49b. AgentDojo suite wiring.** — completed 2026-08-25 (second run of the day). New `agentdojo_suite.py` wiring the R49a adapter to the four default v1.2.1 suites (banking/slack/travel/workspace): per-suite frozenset tables classify *untrusted readers* (returns can carry attacker-authored text, derived from where each suite's injection vectors live in the benchmark's environment data; each adds the `agentdojo:untrusted` source via a `ToolTaintSpec`) and *external sinks* (the deny surface), plus per-sink `resource_args`. `gate_suite(gateway, suite, *, runtime=None, agent_id=None)` mounts a suite in one call — lazy-importing `FunctionsRuntime` only when it must build a runtime (the package still ships without the benchmark), stamping audit records `agentdojo:<suite>`, and raising when classified tools are missing from the runtime (upstream-drift signal). New `policies/agentdojo.yaml`: one deny rule per sink in the cross-suite union (22 rules), each conditioned on `taint.any_of: [agentdojo:untrusted]`, untainted calls default-allow — kept in lockstep with the sink tables by the tests. New runnable `examples/agentdojo/` (banking): untainted `send_money` + read-only `user_task_1` pass; the `injection_task_0` exfiltration is refused by `deny-untrusted-to-send_money` with no money moved. New `agentdojo` optional extra; integration tests skipped without the package. New public exports `AGENTDOJO_UNTRUSTED`, `AGENTDOJO_SUITES`, `AGENTDOJO_SUITE_VERSION`, `gate_suite`, `suite_untrusted_readers`, `suite_external_sinks`, `suite_taint_specs`, `suite_resource_args`. 44 new tests (`tests/test_agentdojo_suite.py`). Test count 961 -> 1005 (+44); ruff + mypy + mkdocs-strict clean.
 
