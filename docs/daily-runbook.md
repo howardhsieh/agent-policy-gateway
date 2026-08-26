@@ -19,7 +19,11 @@ contract the task itself follows; if you change this, also update the task promp
 7. **Move.** In `ROADMAP.md`, move the completed item from "Up next" to "Done" with the
    date and short commit summary.
 8. **Commit & push.** Use a Conventional Commits message: `feat(taint): …`, `docs: …`,
-   etc. Push to `main`.
+   etc. Push to `main` with `git push origin HEAD:main` — **not** `git push origin
+   main`. Cloud sessions start on a harness work branch (`claude/…`) with a stale
+   local `main` left at the clone-time snapshot; plain `git push origin main` pushes
+   that stale branch and is (correctly) rejected as non-fast-forward, which looks
+   like a permission failure but isn't (diagnosed 2026-08-26).
 9. **Report.** Write a one-paragraph summary of the day's work to
    `docs/work-log/YYYY-MM-DD.md` and mention the PR/commit URL.
 
