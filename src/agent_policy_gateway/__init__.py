@@ -5,6 +5,13 @@ from agent_policy_gateway.agentdojo_adapter import (
     GatedAgentDojoRuntime,
     wrap_agentdojo_runtime,
 )
+from agent_policy_gateway.agentdojo_benchmark import (
+    ArmStats,
+    aggregate_episodes,
+    benchmark_suite,
+    render_stats_table,
+    run_suite_matrix,
+)
 from agent_policy_gateway.agentdojo_episodes import (
     CallOutcome,
     EpisodeSummary,
@@ -162,6 +169,7 @@ __all__ = [
     "AGENTDOJO_SUITES",
     "AGENTDOJO_SUITE_VERSION",
     "AGENTDOJO_UNTRUSTED",
+    "ArmStats",
     "DEFAULT_AGENTDOJO_AGENT_ID",
     "DEFAULT_WINDOW_SECONDS",
     "GatedAgentDojoRuntime",
@@ -177,8 +185,10 @@ __all__ = [
     "Verdict",
     "WatchedPolicy",
     "__version__",
+    "aggregate_episodes",
     "anthropic_tool_specs",
     "bench_main",
+    "benchmark_suite",
     "cli_main",
     "benchmark",
     "dispatch_anthropic_tool_use",
@@ -213,6 +223,7 @@ __all__ = [
     "propagate_provenance",
     "read_audit",
     "read_episodes",
+    "render_stats_table",
     "replay_main",
     "summarize_audit",
     "summarize_audit_diff",
@@ -220,6 +231,7 @@ __all__ = [
     "results_to_json",
     "run_default_suite",
     "run_episode",
+    "run_suite_matrix",
     "ScriptedCall",
     "script_from_ground_truth",
     "subsumes",

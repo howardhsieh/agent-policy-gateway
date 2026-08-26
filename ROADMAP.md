@@ -22,10 +22,6 @@ R55 long-horizon stateful adversarial eval harness → R56 APG/Progent/Fides
 comparison. Multi-day items are split into lettered daily sub-items here
 before implementation; work the FIRST unchecked item each run._
 
-- [ ] **R50. Benchmark: no-defense vs APG.** Run the R49c harness across a
-  suite's user tasks × injection tasks under (a) no defense and (b) the APG
-  policy; report attack success rate and task utility for both, written to
-  `docs/benchmarks/agentdojo.md` with the exact reproduction command.
 - [ ] **R51. Dual-label taint: confidentiality + integrity.** Extend the label
   model so confidentiality (secret data must not reach public sinks) and
   integrity (untrusted data must not drive privileged actions) are tracked as
@@ -58,6 +54,18 @@ before implementation; work the FIRST unchecked item each run._
 ---
 
 ## Done
+
+- [x] **R50. Benchmark: no-defense vs APG.** _2026-08-26_ —
+  `agentdojo_benchmark.py`: full matrix (every user×injection pair of all
+  four v1.2.1 suites, both arms, fresh env + deterministic episode ids),
+  `ArmStats`/`aggregate_episodes` with explicit denominators (headline ASR
+  over *armed* episodes only — 9 output-channel injection tasks and slack's
+  reader-borne `injection_task_3` are structurally unmeasurable by tool-call
+  replay), `python -m agent_policy_gateway.agentdojo_benchmark` runner.
+  Results in `docs/benchmarks/agentdojo.md` (nav-linked, banking figures
+  pinned by integration tests): sink-level ASR 100%→0% on all four suites;
+  utility banking 100→25%, slack 100→4.8%, travel 100→70%, workspace
+  100→55% — the utility spread motivating R51–R53. 29 tests (1032 -> 1061).
 
 - [x] **R49c. Attack-case plumbing.** _2026-08-25_ — `agentdojo_episodes.py`:
   scripted LLM-free episode replay (`ScriptedCall` / `script_from_ground_truth`

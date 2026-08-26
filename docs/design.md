@@ -531,3 +531,40 @@ dedicated redactor tool to exist.
   a runtime missing classified tools raises (version-drift signal, tables
   target v1.2.1). Audit records default to `agentdojo:<suite>` so
   multi-suite logs split cleanly on the R36 `--agent` filter.
+
+## AgentDojo benchmark: no defense vs APG (R50)
+
+- **Scripted replay isolates the policy layer.** The benchmark replays
+  ground-truth call sequences (user task's calls, then the hijacked
+  agent's) with no LLM in the loop, so the numbers are deterministic,
+  free, and attribute every delta to the gateway's per-call decisions:
+  the no-defense arm is "what a fully hijacked agent achieves
+  unimpeded", the apg arm is what survives `policies/agentdojo.yaml`.
+  End-to-end LLM measurement (attacks that only sometimes land, models
+  refusing on their own) is deliberately left to the R55 harness.
+- **ASR counts armed episodes only.** 9 of the 35 default injection
+  tasks (1 travel, 8 workspace) have empty scripted ground truths —
+  they exfiltrate through the model's *output text*, which a tool-call
+  gateway alone cannot see — and slack's `injection_task_3` attacks via
+  `get_webpage`, a classified *reader*. The headline ASR therefore
+  counts only episodes whose script contains an attack call on a
+  classified sink ("armed"), excluding structurally unmeasurable pairs
+  instead of letting them deflate both arms; the looser any-attack-call
+  rate is reported alongside (it is what keeps slack's defended any-call
+  figure at 60% — the reader-as-exfiltration channel R53's
+  provenance-aware rules are meant to close).
+- **Fresh environment per episode, deterministic episode ids.** Episodes
+  mutate suite environment state (money moves, messages send), so each
+  (user × injection) pair gets its own
+  `load_and_inject_default_environment({})`; ids are
+  `<suite>:<user_task>x<injection_task>:<arm>` so the two arms' JSONL
+  files line up row-for-row for offline diffing.
+- **Headline result (agentdojo 0.1.35, suites v1.2.1).** Sink-level ASR
+  drops 100% → 0% on all four suites; utility costs are banking
+  100→25%, slack 100→4.8%, travel 100→70%, workspace 100→55%. The
+  spread *is* the Phase 2 motivation: one blanket "no tainted sink
+  calls" rule buys complete (measurable) attack suppression at a
+  utility price that R51 dual labels, R52 declarative declassify, and
+  R53 chain-level rules exist to bring down. Banking integration tests
+  pin these numbers against `docs/benchmarks/agentdojo.md`, so a policy
+  or classification change that moves them fails the suite.

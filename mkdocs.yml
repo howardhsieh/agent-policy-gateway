@@ -56,7 +56,9 @@ nav:
   - CLI reference: cli.md
   - Design: design.md
   - Threat model: threat-model.md
-  - Benchmarks: benchmarks.md
+  - Benchmarks:
+      - Overhead: benchmarks.md
+      - AgentDojo: benchmarks/agentdojo.md
   - Daily runbook: daily-runbook.md
   - Release: release.md
 

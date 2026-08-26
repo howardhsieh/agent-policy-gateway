@@ -1,5 +1,11 @@
 # Benchmarks
 
+!!! note
+    This page covers the **overhead** microbenchmarks (`apg-bench`). For
+    the security benchmark — attack success rate and task utility on
+    AgentDojo, no defense vs. the APG policy — see
+    [AgentDojo: no defense vs. APG](benchmarks/agentdojo.md).
+
 The `agent-policy-gateway` ships with a small benchmark harness that
 measures per-call overhead and throughput on the gateway's hot paths.
 The goal is *reproducible, comparable* numbers across releases — not a
