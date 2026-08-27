@@ -109,6 +109,7 @@ from agent_policy_gateway.openai_adapter import (
 )
 from agent_policy_gateway.policy import (
     Action,
+    DimensionTaintCondition,
     Effect,
     Policy,
     PolicyError,
@@ -151,6 +152,7 @@ __all__ = [
     "CALL_ID_KWARG",
     "CallOutcome",
     "Decision",
+    "DimensionTaintCondition",
     "Effect",
     "EpisodeSummary",
     "Gateway",

@@ -22,12 +22,6 @@ R55 long-horizon stateful adversarial eval harness → R56 APG/Progent/Fides
 comparison. Multi-day items are split into lettered daily sub-items here
 before implementation; work the FIRST unchecked item each run._
 
-- [ ] **R51. Dual-label taint: confidentiality + integrity.** Extend the label
-  model so confidentiality (secret data must not reach public sinks) and
-  integrity (untrusted data must not drive privileged actions) are tracked as
-  distinct dimensions with their own propagation and policy clauses;
-  back-compat for existing single-set policies. Split into sub-items when
-  reached.
 - [ ] **R52. Declarative declassify.** Policy-declared declassification
   (which rule/tool may strip which source, under what conditions) replacing
   ad-hoc per-spec declassifies. Split when reached.
@@ -54,6 +48,17 @@ before implementation; work the FIRST unchecked item each run._
 ---
 
 ## Done
+
+- [x] **R51. Dual-label taint: confidentiality + integrity.** _2026-08-27_ —
+  `TaintLabel` grows `confidentiality` / `integrity` dimension sets beside the
+  legacy `sources` set (which counts in both dimensions — full back-compat),
+  kept canonical so equality is semantic and legacy JSON shapes are unchanged;
+  per-dimension `join`/`subsumes`/`propagate`; `ToolTaintSpec.of` dimension
+  kwargs split declassification (confidentiality) from *endorsement*
+  (integrity); nested `taint.confidentiality:`/`taint.integrity:` policy
+  sub-conditions (top-level clauses match the union); CLI `conf:`/`integ:`
+  `--taint` prefixes, dimension-aware lint W002, conservative W001, replay
+  annotations. 50 tests (1061 -> 1111).
 
 - [x] **R50. Benchmark: no-defense vs APG.** _2026-08-26_ —
   `agentdojo_benchmark.py`: full matrix (every user×injection pair of all

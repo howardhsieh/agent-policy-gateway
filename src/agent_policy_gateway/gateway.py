@@ -273,15 +273,18 @@ class Gateway:
             )
         if rule.effect.action == Action.REDACT and rule.effect.redact is not None:
             spec = rule.effect.redact
-            declassified = (
-                output_label.sources - set(spec.declassify)
-            ) | set(spec.add_label)
+            # A redact declassify is a full strip: the masked field can no
+            # longer leak (confidentiality) nor steer (integrity), so the
+            # sources leave every dimension; add_label marks both.
+            declassified = output_label.without(spec.declassify).join(
+                TaintLabel(frozenset(spec.add_label))
+            )
             return Decision(
                 verdict=Verdict.REDACT,
                 rule_id=rule.id,
                 reason=rule.effect.reason,
-                output_label=TaintLabel(frozenset(declassified)),
-                output_provenance=output_prov.restrict_to(declassified),
+                output_label=declassified,
+                output_provenance=output_prov.restrict_to(declassified.all_sources),
             )
         if (
             rule.effect.action == Action.RATE_LIMIT

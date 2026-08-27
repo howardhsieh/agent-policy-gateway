@@ -568,3 +568,47 @@ dedicated redactor tool to exist.
   R53 chain-level rules exist to bring down. Banking integration tests
   pin these numbers against `docs/benchmarks/agentdojo.md`, so a policy
   or classification change that moves them fails the suite.
+
+## Dual-label taint: confidentiality + integrity (R51)
+
+- **Two dimensions, one atom set.** A `TaintLabel` now carries three
+  frozensets: `confidentiality` (secret data that must not reach public
+  sinks), `integrity` (untrusted data that must not drive privileged
+  actions), and the legacy `sources` set, which counts in **both**
+  dimensions. That last rule is the whole back-compat story: every
+  pre-R51 label, spec, policy, and audit record behaves identically,
+  because a single-set label's effective confidentiality and integrity
+  sets are both just `sources`. The R50 benchmark's blanket policy is
+  untouched; R51 only makes finer policies *expressible*.
+- **Canonical form makes equality semantic.** A source present in both
+  dimension sets means exactly what membership in `sources` means, so
+  `__post_init__` promotes it (and drops dimension entries shadowed by
+  `sources`). `TaintLabel.of("x")` and
+  `of_dimensions(confidentiality=["x"], integrity=["x"])` are therefore
+  `==`, joins never produce a non-canonical label, and serialization is
+  stable — the dimension keys are emitted only when non-empty, so legacy
+  records keep their JSON shape byte-for-byte.
+- **Propagation is per-dimension; declassification splits into
+  declassify and endorse.** `join` / `subsumes` / `propagate` operate on
+  the per-dimension effective sets. `ToolTaintSpec.adds` /
+  `.declassifies` are themselves labels, so a spec can add or strip a
+  source in one dimension only: stripping from confidentiality is
+  declassification proper (a vetted PII redactor — the secret is gone,
+  the untrustedness stays), stripping from integrity is *endorsement* in
+  the IFC-literature sense (a sanitizer vouching the content can no
+  longer steer the agent — the secrecy stays). A redact effect's
+  `declassify` remains a full strip across every dimension: the masked
+  field can neither leak nor steer.
+- **Policy clauses: top-level = union, nested = one dimension.** The
+  existing `taint.any_of/all_of/none_of` clauses now match the union of
+  dimensions (identical for legacy labels, and the fail-closed reading
+  for dimension-scoped ones), while nested `taint.confidentiality:` /
+  `taint.integrity:` sub-conditions match a single dimension's effective
+  set. This is what separates the two AgentDojo failure modes: "deny
+  `send_money` when integrity-tainted" no longer fires on merely-secret
+  data, and "deny `post_public` when confidentiality-tainted" no longer
+  fires on merely-untrusted data. `policy lint` W002 understands the new
+  clauses (including cross-checks against the top-level `none_of`);
+  the W001 shadow check stays deliberately conservative — a rule with
+  dimension sub-conditions never claims generality, trading missed
+  warnings for zero false ones.

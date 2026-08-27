@@ -270,7 +270,7 @@ def run_episode(
         )
 
     label = getattr(runtime, "taint_label", None)
-    final_taint = tuple(sorted(label.sources)) if label is not None else ()
+    final_taint = tuple(sorted(label.all_sources)) if label is not None else ()
 
     return EpisodeSummary(
         episode_id=episode_id or uuid.uuid4().hex,

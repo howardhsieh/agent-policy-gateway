@@ -18,6 +18,10 @@ A *policy file* is a YAML document with a small, fixed schema::
             any_of: [web]            # at least one of these sources present
             all_of: []               # all of these sources present
             none_of: []              # none of these sources present
+            confidentiality:         # optional per-dimension clauses (R51):
+              any_of: [pii]          #   matched against the confidentiality
+            integrity:               #   (resp. integrity) effective set
+              none_of: [web]
         effect:
           action: deny               # allow | deny | review | rate_limit
           reason: "..."              # optional
@@ -74,13 +78,29 @@ class Action(str, Enum):
     REDACT = "redact"
 
 
-class TaintCondition(BaseModel):
-    """Boolean condition on the input taint label of a tool call.
+def _clauses_match(
+    srcs: frozenset[str],
+    *,
+    any_of: tuple[str, ...],
+    all_of: tuple[str, ...],
+    none_of: tuple[str, ...],
+) -> bool:
+    """Shared any_of/all_of/none_of matching against a source set."""
+    if all_of and not set(all_of).issubset(srcs):
+        return False
+    if any_of and not (set(any_of) & srcs):
+        return False
+    if none_of and (set(none_of) & srcs):
+        return False
+    return True
 
-    A condition is satisfied iff *all three* clauses (``all_of``,
-    ``any_of``, ``none_of``) are individually satisfied. An unset clause
-    is trivially true. An empty :class:`TaintCondition` (no clauses at
-    all) matches every label.
+
+class DimensionTaintCondition(BaseModel):
+    """Boolean condition on one dimension of a dual-dimension label (R51).
+
+    Matched against that dimension's *effective* source set (legacy
+    ``sources`` count in both dimensions). An empty condition matches
+    every label.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -93,14 +113,64 @@ class TaintCondition(BaseModel):
         """True iff this condition has no clauses (matches every label)."""
         return not (self.any_of or self.all_of or self.none_of)
 
+    def matches_sources(self, srcs: frozenset[str]) -> bool:
+        """True iff the dimension's effective set satisfies every clause."""
+        return _clauses_match(
+            srcs, any_of=self.any_of, all_of=self.all_of, none_of=self.none_of
+        )
+
+
+class TaintCondition(BaseModel):
+    """Boolean condition on the input taint label of a tool call.
+
+    The top-level ``any_of`` / ``all_of`` / ``none_of`` clauses are
+    matched against the **union** of the label's dimensions — for legacy
+    single-set labels that is exactly the pre-R51 behavior. The nested
+    ``confidentiality:`` / ``integrity:`` sub-conditions (R51) are each
+    matched against that dimension's effective set, so a policy can
+    require e.g. "no untrusted integrity taint" without caring whether
+    the same sources also count as secret.
+
+    A condition is satisfied iff *all* its clauses (top-level and
+    per-dimension) are individually satisfied. An unset clause is
+    trivially true. An empty :class:`TaintCondition` (no clauses at all)
+    matches every label.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    any_of: tuple[str, ...] = ()
+    all_of: tuple[str, ...] = ()
+    none_of: tuple[str, ...] = ()
+    confidentiality: DimensionTaintCondition | None = None
+    integrity: DimensionTaintCondition | None = None
+
+    def is_empty(self) -> bool:
+        """True iff this condition has no clauses (matches every label)."""
+        return not (
+            self.any_of
+            or self.all_of
+            or self.none_of
+            or (self.confidentiality is not None and not self.confidentiality.is_empty())
+            or (self.integrity is not None and not self.integrity.is_empty())
+        )
+
     def matches(self, label: TaintLabel) -> bool:
         """True iff ``label`` satisfies every non-empty clause."""
-        srcs = label.sources
-        if self.all_of and not set(self.all_of).issubset(srcs):
+        if not _clauses_match(
+            label.all_sources,
+            any_of=self.any_of,
+            all_of=self.all_of,
+            none_of=self.none_of,
+        ):
             return False
-        if self.any_of and not (set(self.any_of) & srcs):
+        if self.confidentiality is not None and not self.confidentiality.matches_sources(
+            label.confidentiality_sources
+        ):
             return False
-        if self.none_of and (set(self.none_of) & srcs):
+        if self.integrity is not None and not self.integrity.matches_sources(
+            label.integrity_sources
+        ):
             return False
         return True
 
@@ -380,6 +450,7 @@ def load_policies(paths: Iterable[str | os.PathLike[str]]) -> list[Policy]:
 
 __all__ = [
     "Action",
+    "DimensionTaintCondition",
     "Effect",
     "Policy",
     "PolicyError",

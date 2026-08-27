@@ -76,7 +76,7 @@ $ apg policy explain policies/example.yaml \
 | `file` (positional) | path | — | Path to the policy YAML file. |
 | `--tool` | `NAME` | *required* | Tool name of the hypothetical call (e.g. `send_email`). |
 | `--identity` | `ID` | none | Agent identity making the call, matched against the rule identity. |
-| `--taint` | `a,b,c` | none | Comma-separated taint sources on the call input (e.g. `web,pii`). |
+| `--taint` | `a,b,c` | none | Comma-separated taint sources on the call input (e.g. `web,pii`). A `conf:` / `integ:` prefix scopes a source to the confidentiality (resp. integrity) dimension (e.g. `web,conf:pii`). |
 | `--resource` | `R` | none | Target resource of the call, matched against rule resource globs. |
 | `--arg` | `KEY=VALUE` | none | Argument on the hypothetical call. Repeatable. `true`/`false` become bools, decimal integers become ints, everything else stays a string. |
 
@@ -99,7 +99,7 @@ $ apg policy diff policies/old.yaml policies/new.yaml
 | `new` (positional) | path | — | Path to the new policy YAML file. |
 | `--tool` | `NAME` | none | Restrict the diff to a single scenario with this tool name. |
 | `--identity` | `ID` | none | Agent identity for the single-scenario diff. |
-| `--taint` | `a,b,c` | none | Comma-separated taint sources for the single-scenario diff. |
+| `--taint` | `a,b,c` | none | Comma-separated taint sources for the single-scenario diff (`conf:` / `integ:` prefixes scope a source to one dimension; the probe flattens them to both-dimension sources). |
 | `--resource` | `R` | none | Target resource for the single-scenario diff. |
 | `--arg` | `KEY=VALUE` | none | Argument on the single-scenario call. Repeatable; same coercion as `policy explain`. Switches diff into single-scenario mode. |
 

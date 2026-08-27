@@ -93,6 +93,7 @@ from agent_policy_gateway.audit import (
 )
 from agent_policy_gateway.core import TaintLabel, ToolCall, Verdict
 from agent_policy_gateway.policy import (
+    DimensionTaintCondition,
     Policy,
     PolicyError,
     Selector,
@@ -103,11 +104,42 @@ from agent_policy_gateway.policy import (
 
 
 def _parse_taint(raw: str | None) -> TaintLabel:
-    """Build a :class:`TaintLabel` from a comma-separated ``--taint`` value."""
+    """Build a :class:`TaintLabel` from a comma-separated ``--taint`` value.
+
+    A bare source name counts in both dimensions (the legacy behavior); a
+    ``conf:`` / ``integ:`` prefix scopes the source to the confidentiality
+    (resp. integrity) dimension (R51), e.g. ``--taint web,conf:pii``.
+    """
     if not raw:
         return TaintLabel()
-    sources = [s.strip() for s in raw.split(",") if s.strip()]
-    return TaintLabel.of(*sources)
+    both: list[str] = []
+    conf: list[str] = []
+    integ: list[str] = []
+    for item in (s.strip() for s in raw.split(",")):
+        if not item:
+            continue
+        if item.startswith("conf:"):
+            conf.append(item[len("conf:"):])
+        elif item.startswith("integ:"):
+            integ.append(item[len("integ:"):])
+        else:
+            both.append(item)
+    return TaintLabel.of_dimensions(both=both, confidentiality=conf, integrity=integ)
+
+
+def _taint_repr(label: TaintLabel) -> str:
+    """Render a label for explain/diff output.
+
+    A legacy single-set label renders exactly as before (the repr of its
+    sorted source list); dimension-scoped sources (R51) are appended as
+    ``conf=`` / ``integ=`` annotations only when present.
+    """
+    out = f"{sorted(label.sources)!r}"
+    if label.confidentiality:
+        out += f" conf={sorted(label.confidentiality)!r}"
+    if label.integrity:
+        out += f" integ={sorted(label.integrity)!r}"
+    return out
 
 
 def _coerce_scalar(value: str) -> str | int | bool:
@@ -165,10 +197,22 @@ def _clause_rejection(
             if not _arg_value_equal(expected, call.args[key]):
                 return f"argument {key}={call.args[key]!r} != required {expected!r}"
     if selector.taint is not None and not selector.taint.matches(call.input_label):
+        cond = selector.taint
+        detail = (
+            f"any_of={list(cond.any_of)}, all_of={list(cond.all_of)}, "
+            f"none_of={list(cond.none_of)}"
+        )
+        for dim_name, dim in (
+            ("confidentiality", cond.confidentiality),
+            ("integrity", cond.integrity),
+        ):
+            if dim is not None and not dim.is_empty():
+                detail += (
+                    f", {dim_name}(any_of={list(dim.any_of)}, "
+                    f"all_of={list(dim.all_of)}, none_of={list(dim.none_of)})"
+                )
         return (
-            f"taint {sorted(call.input_label.sources)!r} fails condition "
-            f"(any_of={list(selector.taint.any_of)}, all_of={list(selector.taint.all_of)}, "
-            f"none_of={list(selector.taint.none_of)})"
+            f"taint {_taint_repr(call.input_label)} fails condition ({detail})"
         )
     return None
 
@@ -176,13 +220,12 @@ def _clause_rejection(
 def _explain(policy: Policy, call: ToolCall, *, resource: str | None) -> list[str]:
     """Render the first-match trace for ``call`` against ``policy`` as lines."""
     lines: list[str] = []
-    taint = sorted(call.input_label.sources)
     lines.append(
         f"policy: {policy.name!r} ({len(policy.rules)} rule(s))"
     )
     call_line = (
         f"call:   tool={call.tool_name!r} identity={call.agent_id!r} "
-        f"taint={taint!r} resource={resource!r}"
+        f"taint={_taint_repr(call.input_label)} resource={resource!r}"
     )
     if call.args:
         call_line += f" args={call.args!r}"
@@ -287,14 +330,25 @@ def _scenarios_from_policy(policy: Policy) -> list[_Scenario]:
         assert tool is not None  # default is non-None for tools
         sources: set[str] = set()
         if sel.taint is not None:
-            sources.update(sel.taint.all_of)
-            if sel.taint.any_of and not (set(sel.taint.any_of) & sources):
-                pick = next(
-                    (s for s in sel.taint.any_of if s not in sel.taint.none_of),
-                    None,
-                )
-                if pick is not None:
-                    sources.add(pick)
+            # Scenario sources are legacy both-dimension sources, which
+            # satisfy per-dimension all_of/any_of requirements too — so the
+            # dimension sub-conditions (R51) contribute picks the same way.
+            clause_sets: list[TaintCondition | DimensionTaintCondition] = [sel.taint]
+            clause_sets += [
+                dim
+                for dim in (sel.taint.confidentiality, sel.taint.integrity)
+                if dim is not None
+            ]
+            for clauses in clause_sets:
+                sources.update(clauses.all_of)
+            for clauses in clause_sets:
+                if clauses.any_of and not (set(clauses.any_of) & sources):
+                    pick = next(
+                        (s for s in clauses.any_of if s not in clauses.none_of),
+                        None,
+                    )
+                    if pick is not None:
+                        sources.add(pick)
         resource = _concretize_glob(sel.resource, default=None)
         args: _ScenarioArgs = (
             tuple(sorted(sel.arg_equals.items(), key=lambda kv: kv[0]))
@@ -362,7 +416,7 @@ def _cmd_diff(args: argparse.Namespace) -> int:
             (
                 args.tool if args.tool is not None else _ANY_TOOL,
                 args.identity,
-                frozenset(_parse_taint(args.taint).sources),
+                frozenset(_parse_taint(args.taint).all_sources),
                 args.resource,
                 scenario_args,
             )
@@ -459,6 +513,14 @@ def _taint_at_least_as_general(
     """
     if earlier is None or earlier.is_empty():
         return True
+    # Conservative (R51): a rule constraining a single dimension is never
+    # claimed to be at least as general — per-dimension generality would
+    # need per-dimension guarantee tracking, and a missed shadow warning
+    # is safe where a false one is not.
+    if earlier.confidentiality is not None and not earlier.confidentiality.is_empty():
+        return False
+    if earlier.integrity is not None and not earlier.integrity.is_empty():
+        return False
     if later is None or later.is_empty():
         return False
     if not set(earlier.all_of) <= set(later.all_of):
@@ -502,6 +564,27 @@ def _taint_contradiction(cond: TaintCondition | None) -> str | None:
             f"taint clause requires one of any_of {sorted(cond.any_of)!r} "
             "but none_of forbids every one of them"
         )
+    for dim_name, dim in (
+        ("confidentiality", cond.confidentiality),
+        ("integrity", cond.integrity),
+    ):
+        if dim is None:
+            continue
+        # The top-level none_of forbids a source from the union of
+        # dimensions, so it also forbids it from this dimension's set.
+        forbidden = set(dim.none_of) | set(cond.none_of)
+        clash = set(dim.all_of) & forbidden
+        if clash:
+            source = sorted(clash)[0]
+            return (
+                f"{dim_name} clause requires source {source!r} in all_of "
+                "but a none_of clause forbids it"
+            )
+        if dim.any_of and set(dim.any_of) <= forbidden:
+            return (
+                f"{dim_name} clause requires one of any_of "
+                f"{sorted(dim.any_of)!r} but none_of forbids every one of them"
+            )
     return None
 
 
@@ -841,7 +924,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--taint",
         default=None,
         metavar="a,b,c",
-        help="Comma-separated taint sources on the call input (e.g. web,pii).",
+        help=(
+            "Comma-separated taint sources on the call input (e.g. web,pii). "
+            "A conf:/integ: prefix scopes a source to the confidentiality "
+            "(resp. integrity) dimension (e.g. web,conf:pii)."
+        ),
     )
     explain_p.add_argument(
         "--resource",
@@ -892,7 +979,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--taint",
         default=None,
         metavar="a,b,c",
-        help="Comma-separated taint sources for the single-scenario diff.",
+        help=(
+            "Comma-separated taint sources for the single-scenario diff "
+            "(conf:/integ: prefixes scope a source to one dimension)."
+        ),
     )
     diff_p.add_argument(
         "--resource",

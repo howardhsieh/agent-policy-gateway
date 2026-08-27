@@ -46,7 +46,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import IO, Any
 
-from agent_policy_gateway.core import Decision, ToolCall, Verdict
+from agent_policy_gateway.core import Decision, TaintLabel, ToolCall, Verdict
 
 __all__ = [
     "GENESIS_PREV",
@@ -1281,6 +1281,21 @@ def _truncate(s: str, limit: int = 200) -> str:
     return s if len(s) <= limit else s[: limit - 3] + "..."
 
 
+def _render_label(label: TaintLabel) -> str:
+    """Render a taint label for the replay timeline.
+
+    A legacy single-set label renders exactly as before (a sorted list);
+    dimension-scoped sources (R51) are appended as ``conf=[...]`` /
+    ``integ=[...]`` annotations only when present.
+    """
+    out = f"{sorted(label.sources)}"
+    if label.confidentiality:
+        out += f" conf={sorted(label.confidentiality)}"
+    if label.integrity:
+        out += f" integ={sorted(label.integrity)}"
+    return out
+
+
 def format_record(record: AuditRecord) -> str:
     """Render one :class:`AuditRecord` as a multi-line, scan-friendly block.
 
@@ -1298,10 +1313,10 @@ def format_record(record: AuditRecord) -> str:
     lines = [head]
     if dec.reason:
         lines.append(f"  reason: {dec.reason}")
-    if call.input_label.sources:
-        lines.append(f"  input:  {sorted(call.input_label.sources)}")
-    if dec.output_label.sources:
-        lines.append(f"  output: {sorted(dec.output_label.sources)}")
+    if not call.input_label.is_empty():
+        lines.append(f"  input:  {_render_label(call.input_label)}")
+    if not dec.output_label.is_empty():
+        lines.append(f"  output: {_render_label(dec.output_label)}")
     if not dec.output_provenance.is_empty():
         origins = ", ".join(
             f"{e.source}<-{e.tool_name}@{e.call_id or '?'}"

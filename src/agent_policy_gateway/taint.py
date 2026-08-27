@@ -20,6 +20,10 @@ propagation rules the gateway uses at runtime. The contract is small:
 * :func:`flows_to` is a convenience for policy authors: True iff a label
   is permitted to flow into a sink whose allowed sources are ``allowed``.
 
+Since R51 labels carry two dimensions (confidentiality and integrity);
+every operation here is per-dimension, with the legacy single ``sources``
+set counting in both, so all-legacy inputs behave exactly as before.
+
 These functions are deliberately free of any I/O. The reference monitor
 in :mod:`agent_policy_gateway.gateway` (R4) calls them; tests can call
 them too.
@@ -38,12 +42,14 @@ def join(*labels: TaintLabel) -> TaintLabel:
 
     With zero arguments returns the bottom element (the empty label).
     With any number of arguments the operation is associative,
-    commutative, and idempotent.
+    commutative, and idempotent. The join is per-dimension (R51): the
+    confidentiality and integrity sets union independently, with the
+    legacy ``sources`` set counting in both.
     """
-    sources: frozenset[str] = frozenset()
+    out = TaintLabel()
     for lbl in labels:
-        sources = sources | lbl.sources
-    return TaintLabel(sources)
+        out = out.join(lbl)
+    return out
 
 
 def join_all(labels: Iterable[TaintLabel]) -> TaintLabel:
@@ -75,12 +81,24 @@ def flows_to(label: TaintLabel, allowed: TaintLabel) -> bool:
 class ToolTaintSpec:
     """Declarative taint behaviour for a single tool.
 
+    ``adds`` and ``declassifies`` are themselves :class:`TaintLabel`
+    values, so both are dimension-aware (R51): a source in the label's
+    legacy ``sources`` set adds/strips in *both* dimensions (the pre-R51
+    behavior), one in its ``confidentiality`` set acts on the
+    confidentiality dimension only, and one in its ``integrity`` set on
+    the integrity dimension only.
+
     Attributes:
         adds: Sources the tool contributes on every call. ``web_search``
             adds ``{"web"}``; a CRM read adds ``{"crm.contact.email"}``.
+            A dimension-scoped add marks e.g. a web reader's output as
+            untrusted (integrity) without also calling it secret.
         declassifies: Sources the tool is trusted to strip from its
-            output. Default: empty (no declassification). A vetted
-            redactor might declassify ``{"pii"}``.
+            output. Default: empty. Stripping a source from the
+            confidentiality dimension is *declassification* proper (a
+            vetted PII redactor); stripping from the integrity dimension
+            is *endorsement* in IFC terms (a sanitizer vouching that
+            untrusted content can no longer steer the agent).
     """
 
     adds: TaintLabel = field(default_factory=TaintLabel)
@@ -92,11 +110,28 @@ class ToolTaintSpec:
         *,
         adds: Iterable[str] = (),
         declassifies: Iterable[str] = (),
+        adds_confidentiality: Iterable[str] = (),
+        adds_integrity: Iterable[str] = (),
+        declassifies_confidentiality: Iterable[str] = (),
+        declassifies_integrity: Iterable[str] = (),
     ) -> ToolTaintSpec:
-        """Convenience constructor accepting plain string iterables."""
+        """Convenience constructor accepting plain string iterables.
+
+        ``adds`` / ``declassifies`` act on both dimensions (the legacy
+        behavior); the ``*_confidentiality`` / ``*_integrity`` kwargs
+        scope the add or strip to a single dimension.
+        """
         return cls(
-            adds=TaintLabel(frozenset(adds)),
-            declassifies=TaintLabel(frozenset(declassifies)),
+            adds=TaintLabel.of_dimensions(
+                both=adds,
+                confidentiality=adds_confidentiality,
+                integrity=adds_integrity,
+            ),
+            declassifies=TaintLabel.of_dimensions(
+                both=declassifies,
+                confidentiality=declassifies_confidentiality,
+                integrity=declassifies_integrity,
+            ),
         )
 
 
@@ -106,9 +141,16 @@ def propagate(
 ) -> TaintLabel:
     """Compute the output taint label for a tool call.
 
-    The rule is
+    The rule is, per dimension (R51),
 
-        output = ((∨ input_labels) ∨ spec.adds) \\ spec.declassifies
+        output_dim = ((∨ input_labels) ∨ spec.adds)_dim \\ spec.declassifies_dim
+
+    where ``_dim`` is the dimension's *effective* set (legacy sources
+    count in both dimensions), so a spec declassifying a source in only
+    its confidentiality set leaves the source's integrity taint intact
+    (and vice versa — endorsement leaves secrecy intact). The result is
+    returned in canonical form, so an all-legacy input with an all-legacy
+    spec produces exactly the pre-R51 single-set answer.
 
     With no spec (``spec=None``) the rule degenerates to a pure join
     over ``input_labels`` — i.e. the tool is treated as a transparent
@@ -118,7 +160,11 @@ def propagate(
     raised = join_all(input_labels).join(spec.adds)
     if spec.declassifies.is_empty():
         return raised
-    return TaintLabel(raised.sources - spec.declassifies.sources)
+    return TaintLabel(
+        confidentiality=raised.confidentiality_sources
+        - spec.declassifies.confidentiality_sources,
+        integrity=raised.integrity_sources - spec.declassifies.integrity_sources,
+    )
 
 
 def propagate_provenance(
@@ -151,11 +197,11 @@ def propagate_provenance(
     merged = Provenance()
     for prov in input_provs:
         merged = merged.merge(prov)
-    for source in sorted(spec.adds.sources):
+    for source in sorted(spec.adds.all_sources):
         merged = merged.add(
             ProvenanceEntry(source=source, tool_name=tool_name, call_id=call_id)
         )
-    return merged.restrict_to(output_label.sources)
+    return merged.restrict_to(output_label.all_sources)
 
 
 __all__ = [

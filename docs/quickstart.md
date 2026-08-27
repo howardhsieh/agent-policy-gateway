@@ -109,6 +109,30 @@ refused by rule 'deny-web-to-email': would exfiltrate web-tainted data
    call never reaches `send_email`'s body — `PolicyDenied` is raised before
    the tool runs.
 
+## Two dimensions of taint
+
+Labels track *confidentiality* (secret data that must not reach public sinks)
+and *integrity* (untrusted data that must not drive privileged actions) as
+distinct dimensions. A plain source, as above, counts in both — which is all a
+simple policy needs. When the difference matters, scope the source and the
+clause to one dimension:
+
+```yaml
+  - id: deny-untrusted-payments
+    when:
+      tool: send_money
+      taint:
+        integrity:          # untrusted content must not steer payments...
+          any_of: [web]     # ...but merely-secret data may
+    effect:
+      action: deny
+```
+
+with `ToolTaintSpec.of(adds_integrity=("web",))` on the reader side, and
+`ToolTaintSpec.of(declassifies_integrity=("web",))` for a sanitizer that
+*endorses* content (strips untrustedness while any secrecy taint stays). The
+[Design](design.md) page's R51 section has the full model.
+
 ## Where to go next
 
 - The [Design](design.md) page explains the lattice model, declassification, and

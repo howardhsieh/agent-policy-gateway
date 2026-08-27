@@ -12,6 +12,7 @@ All types are frozen dataclasses with value-based equality and
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -28,38 +29,120 @@ class Verdict(str, Enum):
 
 @dataclass(frozen=True)
 class TaintLabel:
-    """A set-of-sources IFC label.
+    """A dual-dimension set-of-sources IFC label (R51).
 
-    Labels form a join-semilattice: ``join`` is the union of source sets.
-    Two labels are equal iff their source sets are equal. ``subsumes(other)``
-    is True iff ``other``'s sources are a subset of this label's sources.
+    A label tracks two distinct dimensions:
+
+    * **confidentiality** — sources marking *secret* data that must not
+      reach public sinks (e.g. ``pii``, ``crm.contact.email``).
+    * **integrity** — sources marking *untrusted* data that must not
+      drive privileged actions (e.g. ``web``, ``agentdojo:untrusted``).
+
+    The legacy ``sources`` set counts in **both** dimensions, so every
+    pre-R51 label, policy, and audit record keeps its exact behavior.
+    Labels are kept in a canonical form: a source present in both
+    dimension sets is promoted to ``sources`` (the two representations
+    are semantically identical), and a source in ``sources`` never also
+    appears in a dimension set. Equality is therefore semantic.
+
+    Labels form a join-semilattice per dimension: ``join`` is the
+    per-dimension union. ``subsumes(other)`` is True iff ``other``'s
+    effective set is a subset of this label's, in *both* dimensions.
     """
 
     sources: frozenset[str] = field(default_factory=frozenset)
+    confidentiality: frozenset[str] = field(default_factory=frozenset)
+    integrity: frozenset[str] = field(default_factory=frozenset)
+
+    def __post_init__(self) -> None:
+        # Canonicalize: a source in both dimension sets means "both
+        # dimensions", which is what membership in `sources` means; and a
+        # source already in `sources` is redundant in a dimension set.
+        promoted = self.sources | (self.confidentiality & self.integrity)
+        object.__setattr__(self, "sources", promoted)
+        object.__setattr__(self, "confidentiality", self.confidentiality - promoted)
+        object.__setattr__(self, "integrity", self.integrity - promoted)
 
     @classmethod
     def of(cls, *sources: str) -> TaintLabel:
-        """Construct a label from a varargs list of source strings."""
+        """Construct a both-dimensions label from a varargs list of sources."""
         return cls(frozenset(sources))
 
+    @classmethod
+    def of_dimensions(
+        cls,
+        *,
+        both: Iterable[str] = (),
+        confidentiality: Iterable[str] = (),
+        integrity: Iterable[str] = (),
+    ) -> TaintLabel:
+        """Construct a label from per-dimension source iterables."""
+        return cls(
+            sources=frozenset(both),
+            confidentiality=frozenset(confidentiality),
+            integrity=frozenset(integrity),
+        )
+
+    @property
+    def all_sources(self) -> frozenset[str]:
+        """Every source present in *any* dimension (the union)."""
+        return self.sources | self.confidentiality | self.integrity
+
+    @property
+    def confidentiality_sources(self) -> frozenset[str]:
+        """The effective confidentiality set (legacy sources count here)."""
+        return self.sources | self.confidentiality
+
+    @property
+    def integrity_sources(self) -> frozenset[str]:
+        """The effective integrity set (legacy sources count here)."""
+        return self.sources | self.integrity
+
     def join(self, other: TaintLabel) -> TaintLabel:
-        """Return the join (union) of this label and ``other``."""
-        return TaintLabel(self.sources | other.sources)
+        """Return the join (per-dimension union) of this label and ``other``."""
+        return TaintLabel(
+            sources=self.sources | other.sources,
+            confidentiality=self.confidentiality | other.confidentiality,
+            integrity=self.integrity | other.integrity,
+        )
 
     def subsumes(self, other: TaintLabel) -> bool:
-        """True iff every source in ``other`` is also in ``self``."""
-        return other.sources <= self.sources
+        """True iff ``other``'s effective set is contained in this label's,
+        in both dimensions."""
+        return (
+            other.confidentiality_sources <= self.confidentiality_sources
+            and other.integrity_sources <= self.integrity_sources
+        )
+
+    def without(self, remove: Iterable[str]) -> TaintLabel:
+        """Return this label with ``remove`` stripped from every dimension."""
+        gone = frozenset(remove)
+        return TaintLabel(
+            sources=self.sources - gone,
+            confidentiality=self.confidentiality - gone,
+            integrity=self.integrity - gone,
+        )
 
     def is_empty(self) -> bool:
-        """True for the bottom element of the lattice (no sources)."""
-        return not self.sources
+        """True for the bottom element of the lattice (no sources anywhere)."""
+        return not (self.sources or self.confidentiality or self.integrity)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"sources": sorted(self.sources)}
+        out: dict[str, Any] = {"sources": sorted(self.sources)}
+        # Serialized only when present so legacy records keep their shape.
+        if self.confidentiality:
+            out["confidentiality"] = sorted(self.confidentiality)
+        if self.integrity:
+            out["integrity"] = sorted(self.integrity)
+        return out
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> TaintLabel:
-        return cls(frozenset(d.get("sources", [])))
+        return cls(
+            sources=frozenset(d.get("sources", [])),
+            confidentiality=frozenset(d.get("confidentiality", [])),
+            integrity=frozenset(d.get("integrity", [])),
+        )
 
 
 @dataclass(frozen=True)
