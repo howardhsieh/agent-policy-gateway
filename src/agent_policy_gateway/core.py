@@ -291,6 +291,7 @@ class Decision:
     output_label: TaintLabel = field(default_factory=TaintLabel)
     redacted_fields: tuple[str, ...] = ()
     output_provenance: Provenance = field(default_factory=Provenance)
+    declassified_by: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -306,6 +307,9 @@ class Decision:
         # Serialized only when present so legacy/common records keep their shape.
         if not self.output_provenance.is_empty():
             out["output_provenance"] = self.output_provenance.to_dict()
+        # Serialized only when a declassify grant (R52) actually fired.
+        if self.declassified_by:
+            out["declassified_by"] = list(self.declassified_by)
         return out
 
     @classmethod
@@ -317,6 +321,7 @@ class Decision:
             output_label=TaintLabel.from_dict(d.get("output_label") or {}),
             redacted_fields=tuple(d.get("redacted_fields", ())),
             output_provenance=Provenance.from_dict(d.get("output_provenance") or {}),
+            declassified_by=tuple(d.get("declassified_by", ())),
         )
 
 

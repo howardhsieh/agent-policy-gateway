@@ -8,10 +8,10 @@ notebook kernel — wants to pick up edits to its policy file *without*
 restarting.
 
 :class:`WatchedPolicy` provides that, opt-in, with a deliberately small
-surface. It wraps a single policy file and is **duck-typed** to expose the
-one method the reference monitor uses — ``first_match(call, *, resource=...)``
-— so it can be dropped straight into ``Gateway.policies`` with no change to
-the gateway itself::
+surface. It wraps a single policy file and is **duck-typed** to expose what
+the reference monitor uses — ``first_match(call, *, resource=...)`` plus the
+R52 ``declassify`` grants and ``matching_grants(...)`` — so it can be dropped
+straight into ``Gateway.policies`` with no change to the gateway itself::
 
     from agent_policy_gateway import Gateway, watch_policy
 
@@ -48,7 +48,13 @@ from collections.abc import Callable
 from pathlib import Path
 
 from agent_policy_gateway.core import ToolCall
-from agent_policy_gateway.policy import Policy, PolicyError, Rule, load_policy
+from agent_policy_gateway.policy import (
+    DeclassifyGrant,
+    Policy,
+    PolicyError,
+    Rule,
+    load_policy,
+)
 
 logger = logging.getLogger("agent_policy_gateway.reload")
 
@@ -172,6 +178,30 @@ class WatchedPolicy:
         """
         self.maybe_reload()
         return self._policy.first_match(call, resource=resource)
+
+    @property
+    def declassify(self) -> tuple[DeclassifyGrant, ...]:
+        """The live policy's declassify grants (R52), reloading first.
+
+        Part of the ``Gateway.policies`` duck-type contract: the gateway
+        reads this to decide whether declassification is policy-governed.
+        """
+        self.maybe_reload()
+        return self._policy.declassify
+
+    def matching_grants(
+        self,
+        call: ToolCall,
+        *,
+        resource: str | None = None,
+    ) -> tuple[DeclassifyGrant, ...]:
+        """Reload if the file changed, then delegate to the live policy.
+
+        Matches :meth:`Policy.matching_grants` exactly (R52), completing
+        the ``Gateway.policies`` duck-type alongside :meth:`first_match`.
+        """
+        self.maybe_reload()
+        return self._policy.matching_grants(call, resource=resource)
 
 
 def watch_policy(

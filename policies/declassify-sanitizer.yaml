@@ -1,0 +1,50 @@
+version: 1
+name: declassify-sanitizer
+description: >
+  Demonstrates declarative declassification (R52). The policy — not the
+  tool specs — is the authority on who may strip which taint source:
+  sanitize_html may endorse web content (strip `web` from the integrity
+  dimension only, so any secrecy it carries is kept), and pii_redactor
+  may declassify `pii` proper, but only when no untrusted web taint is
+  present (a redactor fed attacker-authored text should not launder it).
+  Everything else keeps its taint; per-spec declassifies are inert while
+  this policy is loaded.
+
+declassify:
+  - id: sanitizer-endorses-web
+    description: Vetted sanitizer output can no longer steer the agent.
+    tool: sanitize_html
+    sources: [web]
+    dimensions: [integrity]
+
+  - id: redactor-declassifies-pii
+    description: Vetted redactor may strip PII unless web taint is present.
+    tool: pii_redactor
+    sources: [pii, "crm.*"]
+    dimensions: [confidentiality]
+    when:
+      integrity:
+        none_of: [web]
+
+rules:
+  - id: deny-web-to-send-email
+    description: Untrusted web content must not drive outbound email.
+    when:
+      tool: send_email
+      taint:
+        integrity:
+          any_of: [web]
+    effect:
+      action: deny
+      reason: untrusted web content cannot drive send_email
+
+  - id: deny-pii-to-web-post
+    description: Secret PII must not reach public sinks.
+    when:
+      tool: post_public
+      taint:
+        confidentiality:
+          any_of: [pii]
+    effect:
+      action: deny
+      reason: PII cannot flow to a public sink

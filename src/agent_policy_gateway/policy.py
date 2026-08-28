@@ -26,6 +26,16 @@ A *policy file* is a YAML document with a small, fixed schema::
           action: deny               # allow | deny | review | rate_limit
           reason: "..."              # optional
           limit_per_minute: 30       # required iff action == rate_limit
+    declassify:                      # optional declassification grants (R52)
+      - id: sanitizer-endorses-web   # str — required, unique among grants
+        tool: sanitize_html          # str or fnmatch glob — required
+        identity: agent.research     # optional (matches ToolCall.agent_id)
+        resource: "https://*"        # optional fnmatch glob
+        sources: [web, "rss.*"]      # fnmatch globs over source names — required
+        dimensions: [integrity]      # subset of {confidentiality, integrity};
+                                     #   default: both
+        when:                        # optional condition on input taint
+          none_of: [pii]
 
 The loader (:func:`load_policy`) parses YAML, validates with Pydantic, and
 returns a frozen :class:`Policy` object. The validator rejects unknown
@@ -316,6 +326,103 @@ class RedactSpec(BaseModel):
         return self.mask
 
 
+#: The two label dimensions a declassify grant may act on (R51 vocabulary).
+DIMENSIONS: tuple[str, ...] = ("confidentiality", "integrity")
+
+
+class DeclassifyGrant(BaseModel):
+    """A policy-declared declassification authority (R52).
+
+    A grant names a *tool* (fnmatch glob) that is permitted to strip the
+    listed ``sources`` (fnmatch globs over concrete source names) from
+    the listed ``dimensions`` of its output label, optionally conditioned
+    on the caller ``identity``, the target ``resource``, and the input
+    taint (``when:``). Stripping from the confidentiality dimension is
+    declassification proper; stripping from the integrity dimension is
+    *endorsement* — the R51 vocabulary.
+
+    When any loaded policy carries grants, the gateway treats the policy
+    as the sole authority on declassification: per-spec
+    ``ToolTaintSpec.declassifies`` is inert and only grants strip (see
+    ``docs/design.md``, "Declarative declassify (R52)").
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: str
+    description: str = ""
+    tool: str
+    identity: str | None = None
+    resource: str | None = None
+    sources: tuple[str, ...]
+    dimensions: tuple[str, ...] = DIMENSIONS
+    when: TaintCondition | None = None
+
+    @field_validator("id", "tool")
+    @classmethod
+    def _nonempty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("declassify grant id and tool must be non-empty")
+        return v
+
+    @field_validator("sources")
+    @classmethod
+    def _sources_nonempty(cls, v: tuple[str, ...]) -> tuple[str, ...]:
+        if not v:
+            raise ValueError("declassify.sources must list at least one source")
+        if any(not s.strip() for s in v):
+            raise ValueError("declassify.sources entries must be non-empty strings")
+        return v
+
+    @field_validator("dimensions")
+    @classmethod
+    def _known_dimensions(cls, v: tuple[str, ...]) -> tuple[str, ...]:
+        if not v:
+            raise ValueError("declassify.dimensions must list at least one dimension")
+        for d in v:
+            if d not in DIMENSIONS:
+                raise ValueError(
+                    f"unknown declassify dimension {d!r} "
+                    f"(expected one of {list(DIMENSIONS)})"
+                )
+        if len(set(v)) != len(v):
+            raise ValueError("declassify.dimensions entries must be unique")
+        return v
+
+    def matches(self, call: ToolCall, *, resource: str | None = None) -> bool:
+        """True iff this grant's conditions are satisfied by ``call``.
+
+        Mirrors :meth:`Selector.matches` semantics field for field: a
+        ``resource`` constraint with no runtime resource to inspect does
+        not match, and ``when:`` is evaluated against the call's input
+        label.
+        """
+        if not fnmatch.fnmatchcase(call.tool_name, self.tool):
+            return False
+        if self.identity is not None and call.agent_id != self.identity:
+            return False
+        if self.resource is not None:
+            if resource is None or not fnmatch.fnmatchcase(resource, self.resource):
+                return False
+        if self.when is not None and not self.when.matches(call.input_label):
+            return False
+        return True
+
+    def strips(self, srcs: frozenset[str], dimension: str) -> frozenset[str]:
+        """The subset of concrete ``srcs`` this grant strips from ``dimension``.
+
+        Empty when the grant does not act on ``dimension``; otherwise every
+        source matching any of the grant's ``sources`` globs.
+        """
+        if dimension not in self.dimensions:
+            return frozenset()
+        return frozenset(
+            s
+            for s in srcs
+            if any(fnmatch.fnmatchcase(s, pat) for pat in self.sources)
+        )
+
+
 class Effect(BaseModel):
     """The action a matched rule applies to a tool call."""
 
@@ -377,6 +484,7 @@ class Policy(BaseModel):
     name: str
     description: str = ""
     rules: tuple[Rule, ...] = ()
+    declassify: tuple[DeclassifyGrant, ...] = ()
 
     @field_validator("name")
     @classmethod
@@ -399,7 +507,27 @@ class Policy(BaseModel):
             if r.id in seen:
                 raise ValueError(f"duplicate rule id: {r.id!r}")
             seen.add(r.id)
+        grant_seen: set[str] = set()
+        for g in self.declassify:
+            if g.id in grant_seen:
+                raise ValueError(f"duplicate declassify grant id: {g.id!r}")
+            grant_seen.add(g.id)
         return self
+
+    def matching_grants(
+        self,
+        call: ToolCall,
+        *,
+        resource: str | None = None,
+    ) -> tuple[DeclassifyGrant, ...]:
+        """Every declassify grant (R52) whose conditions match ``call``.
+
+        Unlike rule matching this is not first-match: all matching grants
+        contribute (their strips union), in declaration order.
+        """
+        return tuple(
+            g for g in self.declassify if g.matches(call, resource=resource)
+        )
 
     def first_match(
         self,
@@ -450,6 +578,8 @@ def load_policies(paths: Iterable[str | os.PathLike[str]]) -> list[Policy]:
 
 __all__ = [
     "Action",
+    "DIMENSIONS",
+    "DeclassifyGrant",
     "DimensionTaintCondition",
     "Effect",
     "Policy",

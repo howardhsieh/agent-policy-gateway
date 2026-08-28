@@ -205,10 +205,51 @@ class Gateway:
         """
         return self._decide(call, resource=resource, consume=False)
 
+    def _governed(self) -> bool:
+        """True iff any loaded policy declares declassify grants (R52).
+
+        A governed gateway treats the policy as the sole authority on
+        declassification: per-spec ``ToolTaintSpec.declassifies`` is
+        inert and only matching grants strip sources. An ungoverned
+        gateway (no grants anywhere) keeps the pre-R52 behavior — spec
+        declassifies apply in full.
+        """
+        return any(p.declassify for p in self.policies)
+
+    def _grant_declassified(
+        self, call: ToolCall, raised: TaintLabel, *, resource: str | None
+    ) -> tuple[TaintLabel, tuple[str, ...]]:
+        """Apply matching declassify grants (R52) to the ``raised`` label.
+
+        Every matching grant across every policy contributes (union of
+        strips, policy order); a grant is recorded in the returned id
+        tuple only when it actually removed at least one source. The
+        result is canonical, like :func:`propagate`'s.
+        """
+        conf = raised.confidentiality_sources
+        integ = raised.integrity_sources
+        strip_conf: set[str] = set()
+        strip_integ: set[str] = set()
+        fired: list[str] = []
+        for policy in self.policies:
+            for grant in policy.matching_grants(call, resource=resource):
+                got_conf = grant.strips(conf, "confidentiality")
+                got_integ = grant.strips(integ, "integrity")
+                if got_conf or got_integ:
+                    strip_conf |= got_conf
+                    strip_integ |= got_integ
+                    fired.append(grant.id)
+        output = TaintLabel(
+            confidentiality=conf - strip_conf,
+            integrity=integ - strip_integ,
+        )
+        return output, tuple(dict.fromkeys(fired))
+
     def _match_rule(
         self, call: ToolCall, *, resource: str | None = None
-    ) -> tuple[Rule | None, TaintLabel, Provenance]:
-        """Return the first matching rule, the output label, and provenance.
+    ) -> tuple[Rule | None, TaintLabel, Provenance, tuple[str, ...]]:
+        """Return the first matching rule, output label, provenance, and
+        the ids of the declassify grants that fired (R52).
 
         Across policies the first policy with a match wins; within a
         policy the first matching rule wins (delegated to
@@ -220,7 +261,18 @@ class Gateway:
         was before provenance tracking existed.
         """
         spec = self.tool_specs.get(call.tool_name)
-        output_label = propagate([call.input_label], spec)
+        declassified_by: tuple[str, ...] = ()
+        if self._governed():
+            # Policy-declared declassification (R52): raise with the
+            # spec's adds only — its ad-hoc declassifies are inert — then
+            # strip what the matching grants permit.
+            raise_spec = ToolTaintSpec(adds=spec.adds) if spec is not None else None
+            raised = propagate([call.input_label], raise_spec)
+            output_label, declassified_by = self._grant_declassified(
+                call, raised, resource=resource
+            )
+        else:
+            output_label = propagate([call.input_label], spec)
         if self.track_provenance:
             output_prov = propagate_provenance(
                 [call.input_provenance],
@@ -234,8 +286,8 @@ class Gateway:
         for policy in self.policies:
             rule = policy.first_match(call, resource=resource)
             if rule is not None:
-                return rule, output_label, output_prov
-        return None, output_label, output_prov
+                return rule, output_label, output_prov, declassified_by
+        return None, output_label, output_prov, declassified_by
 
     def _decide(
         self,
@@ -252,7 +304,7 @@ class Gateway:
         :meth:`aexecute`); an over-limit call consumes nothing and is
         returned as a DENY.
         """
-        rule, output_label, output_prov = self._match_rule(
+        rule, output_label, output_prov, declassified_by = self._match_rule(
             call, resource=resource
         )
         if rule is None:
@@ -263,6 +315,7 @@ class Gateway:
                     reason="default-deny: no policy rule matched",
                     output_label=output_label,
                     output_provenance=output_prov,
+                    declassified_by=declassified_by,
                 )
             return Decision(
                 verdict=Verdict.ALLOW,
@@ -270,12 +323,15 @@ class Gateway:
                 reason="default-allow: no policy rule matched",
                 output_label=output_label,
                 output_provenance=output_prov,
+                declassified_by=declassified_by,
             )
         if rule.effect.action == Action.REDACT and rule.effect.redact is not None:
             spec = rule.effect.redact
             # A redact declassify is a full strip: the masked field can no
             # longer leak (confidentiality) nor steer (integrity), so the
-            # sources leave every dimension; add_label marks both.
+            # sources leave every dimension; add_label marks both. It is
+            # already policy-declared, so it applies under R52 governance
+            # too — after any grant strips.
             declassified = output_label.without(spec.declassify).join(
                 TaintLabel(frozenset(spec.add_label))
             )
@@ -285,6 +341,7 @@ class Gateway:
                 reason=rule.effect.reason,
                 output_label=declassified,
                 output_provenance=output_prov.restrict_to(declassified.all_sources),
+                declassified_by=declassified_by,
             )
         if (
             rule.effect.action == Action.RATE_LIMIT
@@ -304,6 +361,7 @@ class Gateway:
                     reason=rule.effect.reason,
                     output_label=output_label,
                     output_provenance=output_prov,
+                    declassified_by=declassified_by,
                 )
             reason = (
                 f"rate limit exceeded: more than {limit} calls/min "
@@ -317,6 +375,7 @@ class Gateway:
                 reason=reason,
                 output_label=output_label,
                 output_provenance=output_prov,
+                declassified_by=declassified_by,
             )
         return Decision(
             verdict=_action_to_verdict(rule.effect.action),
@@ -324,6 +383,7 @@ class Gateway:
             reason=rule.effect.reason,
             output_label=output_label,
             output_provenance=output_prov,
+            declassified_by=declassified_by,
         )
 
     def _redact_spec_for(
@@ -335,7 +395,7 @@ class Gateway:
         rule. Used by the execute paths to fetch the transformation to apply
         after :meth:`_decide` has already classified the call as REDACT.
         """
-        rule, _, _ = self._match_rule(call, resource=resource)
+        rule, _, _, _ = self._match_rule(call, resource=resource)
         if rule is not None and rule.effect.action == Action.REDACT:
             return rule.effect.redact
         return None

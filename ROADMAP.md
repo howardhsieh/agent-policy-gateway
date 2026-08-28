@@ -22,9 +22,6 @@ R55 long-horizon stateful adversarial eval harness → R56 APG/Progent/Fides
 comparison. Multi-day items are split into lettered daily sub-items here
 before implementation; work the FIRST unchecked item each run._
 
-- [ ] **R52. Declarative declassify.** Policy-declared declassification
-  (which rule/tool may strip which source, under what conditions) replacing
-  ad-hoc per-spec declassifies. Split when reached.
 - [ ] **R53. Chain-level policies.** Rules that can reference provenance /
   call-history (e.g. "deny send_email if any web-sourced call precedes it in
   this session"). Split when reached.
@@ -48,6 +45,21 @@ before implementation; work the FIRST unchecked item each run._
 ---
 
 ## Done
+
+- [x] **R52. Declarative declassify.** _2026-08-28_ — declassification
+  authority moves into the policy file: a top-level `declassify:` section
+  of grants (`DeclassifyGrant`) — which tool (glob) may strip which
+  `sources` (globs) from which `dimensions` (confidentiality =
+  declassify, integrity = endorse; default both), optionally conditioned
+  on `identity` / `resource` / input-taint `when:`. Any grant anywhere
+  makes the gateway *governed*: per-spec declassifies go inert and only
+  matching grants strip (union, declaration order); no grants = pre-R52
+  behavior byte-for-byte. Fired grant ids audited via
+  `Decision.declassified_by` (emitted only when non-empty; `apg-replay`
+  `declassify:` line); explain grant trace; lint W002-for-grants + new
+  W003 (unconditional strip-everything grant); `WatchedPolicy` duck-type
+  extended; `policies/declassify-sanitizer.yaml` example. 51 tests
+  (1111 -> 1162).
 
 - [x] **R51. Dual-label taint: confidentiality + integrity.** _2026-08-27_ —
   `TaintLabel` grows `confidentiality` / `integrity` dimension sets beside the

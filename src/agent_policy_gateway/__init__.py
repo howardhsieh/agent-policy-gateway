@@ -108,7 +108,9 @@ from agent_policy_gateway.openai_adapter import (
     wrap_openai_tools,
 )
 from agent_policy_gateway.policy import (
+    DIMENSIONS,
     Action,
+    DeclassifyGrant,
     DimensionTaintCondition,
     Effect,
     Policy,
@@ -151,7 +153,9 @@ __all__ = [
     "BenchResult",
     "CALL_ID_KWARG",
     "CallOutcome",
+    "DIMENSIONS",
     "Decision",
+    "DeclassifyGrant",
     "DimensionTaintCondition",
     "Effect",
     "EpisodeSummary",

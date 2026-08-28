@@ -93,6 +93,8 @@ from agent_policy_gateway.audit import (
 )
 from agent_policy_gateway.core import TaintLabel, ToolCall, Verdict
 from agent_policy_gateway.policy import (
+    DIMENSIONS,
+    DeclassifyGrant,
     DimensionTaintCondition,
     Policy,
     PolicyError,
@@ -217,6 +219,58 @@ def _clause_rejection(
     return None
 
 
+def _grant_rejection(
+    grant: DeclassifyGrant,
+    call: ToolCall,
+    *,
+    resource: str | None,
+) -> str | None:
+    """Return a human reason the declassify grant rejected the call, or ``None``.
+
+    ``None`` means the grant matches. Mirrors :meth:`DeclassifyGrant.matches`
+    exactly so the trace never disagrees with the gateway.
+    """
+    if not fnmatch.fnmatchcase(call.tool_name, grant.tool):
+        return f"tool {call.tool_name!r} does not match glob {grant.tool!r}"
+    if grant.identity is not None and call.agent_id != grant.identity:
+        return f"identity {call.agent_id!r} != required {grant.identity!r}"
+    if grant.resource is not None:
+        if resource is None:
+            return (
+                f"grant needs resource matching {grant.resource!r} "
+                "but none was given"
+            )
+        if not fnmatch.fnmatchcase(resource, grant.resource):
+            return f"resource {resource!r} does not match glob {grant.resource!r}"
+    if grant.when is not None and not grant.when.matches(call.input_label):
+        return f"taint {_taint_repr(call.input_label)} fails the when: condition"
+    return None
+
+
+def _explain_grants(
+    policy: Policy, call: ToolCall, *, resource: str | None
+) -> list[str]:
+    """Render the declassify-grant trace (R52) for ``call``, as lines.
+
+    Empty when the policy declares no grants, so pre-R52 explain output
+    is unchanged.
+    """
+    if not policy.declassify:
+        return []
+    lines = ["", f"declassify grants ({len(policy.declassify)}):"]
+    for grant in policy.declassify:
+        reason = _grant_rejection(grant, call, resource=resource)
+        if reason is None:
+            dims = "+".join(grant.dimensions)
+            lines.append(
+                f"  [MATCH ] {grant.id}: may strip {list(grant.sources)!r} "
+                f"from {dims}"
+            )
+        else:
+            lines.append(f"  [ no  ] {grant.id}: {reason}")
+    return lines
+
+
 def _explain(policy: Policy, call: ToolCall, *, resource: str | None) -> list[str]:
     """Render the first-match trace for ``call`` against ``policy`` as lines."""
     lines: list[str] = []
@@ -255,6 +309,7 @@ def _explain(policy: Policy, call: ToolCall, *, resource: str | None) -> list[st
             "=> no rule matched; the gateway's default disposition applies "
             "to this call"
         )
+    lines.extend(_explain_grants(policy, call, resource=resource))
     return lines
 
 
@@ -608,6 +663,27 @@ def _lint(policy: Policy) -> list[str]:
                     f"first by {earlier.id!r}"
                 )
                 break
+    for grant in policy.declassify:
+        why = _taint_contradiction(grant.when)
+        if why is not None:
+            findings.append(
+                f"W002 declassify grant {grant.id!r} can never match: {why}"
+            )
+            continue
+        # W003 (R52): an unconditional strip-everything grant defeats the
+        # point of taint tracking — flag it.
+        if (
+            grant.tool == "*"
+            and "*" in grant.sources
+            and grant.identity is None
+            and grant.resource is None
+            and (grant.when is None or grant.when.is_empty())
+            and set(grant.dimensions) == set(DIMENSIONS)
+        ):
+            findings.append(
+                f"W003 declassify grant {grant.id!r} is unconditional: it "
+                "strips every source from every tool call in both dimensions"
+            )
     return findings
 
 

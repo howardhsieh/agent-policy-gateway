@@ -64,7 +64,9 @@ missing.
 ### `apg policy explain`
 
 Build a hypothetical tool call and print the first-match trace through the policy's
-rules — which rules were skipped and why, and which one finally decided.
+rules — which rules were skipped and why, and which one finally decided. When the
+policy declares declassify grants (R52), a grant-by-grant match trace is appended
+showing which grants would fire on the call and what each may strip.
 
 ```console
 $ apg policy explain policies/example.yaml \
@@ -108,8 +110,10 @@ malformed, `2` if a file is missing.
 
 ### `apg policy lint`
 
-Static quality checks: rules that can never match (a self-contradictory taint clause) and
-rules shadowed by an earlier, at-least-as-general rule.
+Static quality checks: rules that can never match (a self-contradictory taint
+clause, W002), rules shadowed by an earlier, at-least-as-general rule (W001),
+declassify grants (R52) whose `when:` condition can never match (W002), and
+unconditional strip-everything declassify grants (W003).
 
 ```console
 $ apg policy lint policies/example.yaml

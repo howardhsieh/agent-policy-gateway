@@ -1317,6 +1317,8 @@ def format_record(record: AuditRecord) -> str:
         lines.append(f"  input:  {_render_label(call.input_label)}")
     if not dec.output_label.is_empty():
         lines.append(f"  output: {_render_label(dec.output_label)}")
+    if dec.declassified_by:
+        lines.append(f"  declassify: {', '.join(dec.declassified_by)}")
     if not dec.output_provenance.is_empty():
         origins = ", ".join(
             f"{e.source}<-{e.tool_name}@{e.call_id or '?'}"

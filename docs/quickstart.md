@@ -133,6 +133,12 @@ with `ToolTaintSpec.of(adds_integrity=("web",))` on the reader side, and
 *endorses* content (strips untrustedness while any secrecy taint stays). The
 [Design](design.md) page's R51 section has the full model.
 
+Better still, declare declassification in the policy itself (R52): once a
+policy carries a top-level `declassify:` section of grants — which tool may
+strip which sources, from which dimension, under what conditions — the
+policy is the sole authority and per-spec `declassifies` is inert. See
+`policies/declassify-sanitizer.yaml` and the Design page's R52 section.
+
 ## Where to go next
 
 - The [Design](design.md) page explains the lattice model, declassification, and

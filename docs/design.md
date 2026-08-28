@@ -612,3 +612,68 @@ dedicated redactor tool to exist.
   the W001 shadow check stays deliberately conservative — a rule with
   dimension sub-conditions never claims generality, trading missed
   warnings for zero false ones.
+
+## Declarative declassify (R52)
+
+Until R52, declassification was a *code-level* privilege: any code path
+that could register a `ToolTaintSpec` could also declare
+`declassifies=...` and silently launder taint — the policy file, the
+artifact that is reviewed, versioned, and diffed, had no say in it. R52
+moves the authority into the policy: a top-level `declassify:` section
+lists **grants**, each naming which tool (fnmatch glob) may strip which
+sources (globs over source names) from which label dimensions, under
+what conditions:
+
+```yaml
+declassify:
+  - id: sanitizer-endorses-web
+    tool: sanitize_html
+    sources: [web]
+    dimensions: [integrity]        # endorsement; default is both dimensions
+    identity: agent.research       # optional
+    resource: "https://trusted/*"  # optional
+    when:                          # optional condition on the input label
+      confidentiality:
+        none_of: [pii]
+```
+
+Semantics, chosen deliberately:
+
+- **Presence of grants flips the authority.** A gateway is
+  *declassification-governed* iff any loaded policy carries a non-empty
+  `declassify:` section. Ungoverned gateways behave byte-for-byte as
+  before (per-spec `declassifies` applies) — the entire back-compat
+  story, mirroring R51's. Governed gateways treat the policy as the
+  *sole* authority: `ToolTaintSpec.declassifies` is inert, and the
+  output label is the raised label (inputs ∨ `spec.adds`) minus what
+  matching grants permit. Migrating a spec-declared strip is a
+  three-line grant.
+- **Grants strip directly; all matching grants contribute.** Unlike
+  rule matching there is no first-match: strips union across every
+  matching grant of every policy, in declaration order. A grant strips
+  only from the dimensions it lists — `dimensions: [integrity]` is
+  endorsement (untrustedness gone, secrecy kept), `[confidentiality]`
+  is declassification proper — reusing the R51 vocabulary.
+- **Fired grants are audited.** `Decision.declassified_by` records the
+  ids of grants that actually removed at least one source (a matching
+  grant that stripped nothing is not recorded), serialized only when
+  non-empty so legacy record shapes are unchanged; `apg-replay` prints
+  them as a `declassify:` line. Provenance entries for stripped sources
+  drop with the sources, as with every declassification.
+- **Redact effects are unchanged.** A `redact` effect's `declassify`
+  was already policy-declared, so it still applies under governance —
+  after any grant strips.
+- **Tooling.** `apg policy explain` appends a grant-by-grant match
+  trace whenever the policy declares grants (grantless policies render
+  byte-for-byte as before); `apg policy lint` extends W002 to grants
+  whose `when:` condition is self-contradictory and adds **W003** for
+  an unconditional strip-everything grant (`tool: "*"`,
+  `sources: ["*"]`, both dimensions, no identity/resource/when) — legal
+  but almost certainly a policy bug. `WatchedPolicy` (R20) grew the
+  `declassify` / `matching_grants` duck-type members, so hot-reloaded
+  policies govern like plain ones.
+
+`policies/declassify-sanitizer.yaml` is the runnable example: an
+integrity-only endorsement grant for `sanitize_html`, and a
+`pii_redactor` grant conditioned on the *absence* of web taint — a
+redactor fed attacker-authored text must not launder it.
