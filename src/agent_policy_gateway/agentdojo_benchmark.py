@@ -335,7 +335,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     all_stats: list[ArmStats] = []
     for suite_name in args.suites:
         suite = get_suite(AGENTDOJO_SUITE_VERSION, suite_name)
-        gateway = Gateway(policies=[policy])
+        # track_history so chain-level policies (R53) work under --policy;
+        # recording history never changes a history-free policy's decisions.
+        gateway = Gateway(policies=[policy], track_history=True)
         no_defense, apg = benchmark_suite(suite, gateway)
         sinks = suite_external_sinks(suite_name)
         all_stats.append(

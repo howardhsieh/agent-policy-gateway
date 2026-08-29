@@ -22,9 +22,6 @@ R55 long-horizon stateful adversarial eval harness → R56 APG/Progent/Fides
 comparison. Multi-day items are split into lettered daily sub-items here
 before implementation; work the FIRST unchecked item each run._
 
-- [ ] **R53. Chain-level policies.** Rules that can reference provenance /
-  call-history (e.g. "deny send_email if any web-sourced call precedes it in
-  this session"). Split when reached.
 - [ ] **R54. Progent symbolic-rule import PoC.** Translate a subset of
   Progent's symbolic policy rules into APG policies. Split when reached.
 - [ ] **R55. Long-horizon stateful adversarial eval harness.** Split when
@@ -45,6 +42,27 @@ before implementation; work the FIRST unchecked item each run._
 ---
 
 ## Done
+
+- [x] **R53. Chain-level policies.** _2026-08-29_ — rules over the
+  session's call history and the input's provenance chain: `chain:`
+  selector sub-condition with `any_prior:` / `no_prior:`
+  `PriorCallMatcher` lists (tool/resource globs, `source` globbed
+  against the prior call's output label, `verdict` to scope to executed
+  calls — denied attempts are recorded too) and a `provenance:`
+  `any_of`/`none_of` matcher condition over R30 provenance entries.
+  Opt-in gateway state: `track_history=True` records a
+  `CallHistoryEntry` per mediated call keyed by agent_id (execute paths
+  only, after the decision — a call never sees itself; `decide()` is
+  pure), `call_history()` / `reset_history()`; untracked history
+  fails closed (`history=None` ≠ empty — chain-history rules never
+  match), so pre-R53 behavior is byte-for-byte. CLI: explain `--prior`
+  synthetic history + chain trace, W002 for unsatisfiable chains,
+  conservative W001, diff documented as history-less. AgentDojo: the
+  benchmark gateway tracks history, `reset_taint()` resets it, and
+  `policies/agentdojo-chain.yaml` closes the R50 reader-borne
+  exfiltration channel — slack any-call ASR 60%→40%, utility unchanged
+  4.8% (pinned in tests, published in `docs/benchmarks/agentdojo.md`).
+  64 tests (1162 -> 1226).
 
 - [x] **R52. Declarative declassify.** _2026-08-28_ — declassification
   authority moves into the policy file: a top-level `declassify:` section

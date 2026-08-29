@@ -44,10 +44,10 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
-from agent_policy_gateway.core import ToolCall
+from agent_policy_gateway.core import CallHistoryEntry, ToolCall
 from agent_policy_gateway.policy import (
     DeclassifyGrant,
     Policy,
@@ -170,14 +170,16 @@ class WatchedPolicy:
         call: ToolCall,
         *,
         resource: str | None = None,
+        history: Sequence[CallHistoryEntry] | None = None,
     ) -> Rule | None:
         """Reload if the file changed, then delegate to the live policy.
 
-        Matches :meth:`Policy.first_match` exactly so a ``WatchedPolicy`` is
-        a drop-in member of ``Gateway.policies``.
+        Matches :meth:`Policy.first_match` exactly — the R53 ``history``
+        keyword included — so a ``WatchedPolicy`` is a drop-in member of
+        ``Gateway.policies``.
         """
         self.maybe_reload()
-        return self._policy.first_match(call, resource=resource)
+        return self._policy.first_match(call, resource=resource, history=history)
 
     @property
     def declassify(self) -> tuple[DeclassifyGrant, ...]:

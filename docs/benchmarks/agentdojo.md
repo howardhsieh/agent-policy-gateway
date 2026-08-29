@@ -94,10 +94,47 @@ single `get_webpage` call whose URL exfiltrates data to an
 attacker-controlled site. Under the R49b classification `get_webpage` is
 an untrusted **reader** (its return carries attacker text), not a sink,
 so the call executes in both arms — that is most of why slack's
-any-call ASR stays at 60% while its sink ASR is 0%. Treating
-network-touching readers as sinks (or gating on argument provenance,
-R53) would close this channel; the current tables deliberately keep the
-R49b classification so the numbers measure the shipped policy as-is.
+any-call ASR stays at 60% while its sink ASR is 0%. The chain-level
+policy below (R53) closes this channel; the tables above deliberately
+keep the R49b classification so the numbers measure the shipped
+baseline policy as-is.
+
+## Chain-level policy arm (R53)
+
+[`policies/agentdojo-chain.yaml`](https://github.com/howardhsieh/agent-policy-gateway/blob/main/policies/agentdojo-chain.yaml)
+is the baseline policy plus one chain-level rule
+(`deny-web-fetch-after-untrusted-read`): deny `get_webpage` once **any
+executed call in the session** has returned attacker-authorable content
+— a condition on the recorded call history (`chain.any_prior`, R53),
+not on the current call's input label. Replayed on slack with a
+history-tracking gateway
+(`python -m agent_policy_gateway.agentdojo_benchmark slack --policy
+policies/agentdojo-chain.yaml`):
+
+```text
+suite      arm        episodes  utility  armed ASR(sink) ASR(any-call) refusals
+-------------------------------------------------------------------------------
+slack      apg-chain       105     4.8%     84      0.0%         40.0%      382
+```
+
+Read against the baseline `apg` row above: the any-call ASR drops from
+**60% to 40%** — the entire reader-borne channel. `injection_task_3`'s
+`get_webpage` attack call, which executed in all 21 of its episodes
+under the baseline, is refused in every one of them (refusals 296 →
+382), and utility is **unchanged** at 4.8%: no still-succeeding slack
+user task fetches a webpage after an untrusted read, so the extra rule
+costs nothing here. The remaining 40% is attack calls on plain readers
+(`read_channel_messages` etc.) that carry no data out by themselves.
+The other three suites don't expose `get_webpage`, so their numbers are
+identical to the baseline arm.
+
+One honest caveat: on this scripted replay the same numbers would fall
+out of an input-taint rule on `get_webpage` (session taint accumulates
+monotonically here). The chain form is deliberately stated over
+*history*: it still fires after a declassify grant (R52) strips the
+session label, and it can match denied *attempts* — behaviors an input
+label cannot express. The integration tests pin the slack figures
+above.
 
 ## Reproducing
 

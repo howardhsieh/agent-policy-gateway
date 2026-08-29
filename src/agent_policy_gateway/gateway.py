@@ -58,6 +58,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from agent_policy_gateway.core import (
+    CallHistoryEntry,
     Decision,
     Provenance,
     TaintLabel,
@@ -166,6 +167,15 @@ class Gateway:
             keyed by ``(agent_id, tool_name)``. A fresh
             :class:`RateLimiter` (60s window, monotonic clock) by default;
             inject one with a custom window or clock for testing.
+        track_history: When True (default False), the execute paths
+            record one :class:`CallHistoryEntry` per mediated call —
+            denials included — keyed by ``agent_id``, and rule matching
+            sees the caller's history so chain-level policy conditions
+            (``Selector.chain``, R53) can reference prior calls. The
+            pure :meth:`decide` reads history but never records. Off,
+            history-referencing chain rules never match (the condition
+            cannot be verified without a history), so decisions are
+            byte-for-byte pre-R53.
     """
 
     policies: list[Policy] = field(default_factory=list)
@@ -174,6 +184,10 @@ class Gateway:
     default_deny: bool = False
     rate_limiter: RateLimiter = field(default_factory=RateLimiter)
     track_provenance: bool = False
+    track_history: bool = False
+    _history: dict[str | None, list[CallHistoryEntry]] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
 
     # ----- registration helpers -------------------------------------------------
 
@@ -204,6 +218,57 @@ class Gateway:
         :meth:`aexecute`.
         """
         return self._decide(call, resource=resource, consume=False)
+
+    # ----- session call history (R53) -------------------------------------------
+
+    def call_history(
+        self, agent_id: str | None = None
+    ) -> tuple[CallHistoryEntry, ...]:
+        """The recorded call history for ``agent_id`` (R53), oldest first.
+
+        Empty when :attr:`track_history` is off or nothing was mediated
+        for that agent yet. ``None`` is the bucket for calls carrying no
+        ``agent_id``.
+        """
+        return tuple(self._history.get(agent_id, ()))
+
+    def reset_history(self) -> None:
+        """Drop every agent's recorded call history (e.g. between episodes)."""
+        self._history.clear()
+
+    def _history_view(
+        self, call: ToolCall
+    ) -> tuple[CallHistoryEntry, ...] | None:
+        """The history chain rules match against for ``call``.
+
+        ``None`` when history is not tracked — chain conditions
+        referencing prior calls then never match — and the (possibly
+        empty) recorded tuple when it is.
+        """
+        if not self.track_history:
+            return None
+        return tuple(self._history.get(call.agent_id, ()))
+
+    def _record_history(
+        self, call: ToolCall, decision: Decision, *, resource: str | None
+    ) -> None:
+        """Append ``call``'s decision to its agent's history (R53).
+
+        Called by the execute paths only — after the decision (and any
+        redaction) is final, so the entry never appears in its own
+        call's history view — and for every verdict: a denied *attempt*
+        is chain-policy-relevant even though nothing executed.
+        """
+        self._history.setdefault(call.agent_id, []).append(
+            CallHistoryEntry(
+                tool_name=call.tool_name,
+                verdict=decision.verdict,
+                output_label=decision.output_label,
+                agent_id=call.agent_id,
+                call_id=call.call_id,
+                resource=resource,
+            )
+        )
 
     def _governed(self) -> bool:
         """True iff any loaded policy declares declassify grants (R52).
@@ -258,8 +323,11 @@ class Gateway:
         The output provenance chain is populated only when
         :attr:`track_provenance` is enabled; otherwise it is the empty
         chain, so the resulting :class:`Decision` is byte-for-byte what it
-        was before provenance tracking existed.
+        was before provenance tracking existed. Rule matching sees the
+        caller's session history (R53) only when :attr:`track_history`
+        is enabled.
         """
+        history = self._history_view(call)
         spec = self.tool_specs.get(call.tool_name)
         declassified_by: tuple[str, ...] = ()
         if self._governed():
@@ -284,7 +352,7 @@ class Gateway:
         else:
             output_prov = Provenance()
         for policy in self.policies:
-            rule = policy.first_match(call, resource=resource)
+            rule = policy.first_match(call, resource=resource, history=history)
             if rule is not None:
                 return rule, output_label, output_prov, declassified_by
         return None, output_label, output_prov, declassified_by
@@ -467,6 +535,8 @@ class Gateway:
             call, decision, fn_args, fn_kwargs = self._apply_redaction(
                 call, decision, fn, args, kwargs, resource=resource
             )
+        if self.track_history:
+            self._record_history(call, decision, resource=resource)
         if self.audit_writer is not None:
             self.audit_writer(call, decision)
         if decision.verdict == Verdict.DENY:
@@ -516,6 +586,8 @@ class Gateway:
             call, decision, fn_args, fn_kwargs = self._apply_redaction(
                 call, decision, fn, args, kwargs, resource=resource
             )
+        if self.track_history:
+            self._record_history(call, decision, resource=resource)
         if self.audit_writer is not None:
             audit_result = self.audit_writer(call, decision)
             if inspect.isawaitable(audit_result):

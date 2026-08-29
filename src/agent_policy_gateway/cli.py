@@ -91,9 +91,10 @@ from agent_policy_gateway.audit import (
     summarize_audit,
     summarize_audit_diff,
 )
-from agent_policy_gateway.core import TaintLabel, ToolCall, Verdict
+from agent_policy_gateway.core import CallHistoryEntry, TaintLabel, ToolCall, Verdict
 from agent_policy_gateway.policy import (
     DIMENSIONS,
+    ChainCondition,
     DeclassifyGrant,
     DimensionTaintCondition,
     Policy,
@@ -171,11 +172,110 @@ def _arg_pair(raw: str) -> tuple[str, str | int | bool]:
     return key, _coerce_scalar(value)
 
 
+def _parse_prior(raw: str) -> CallHistoryEntry:
+    """argparse type for ``--prior TOOL[,KEY=VALUE...]`` (repeatable on explain).
+
+    Builds one synthetic session-history entry (R53) for chain-condition
+    matching. The first comma-separated item is the prior call's tool
+    name; the rest are ``KEY=VALUE`` pairs: ``source=`` (repeatable,
+    ``conf:``/``integ:`` prefixes as in ``--taint``) adds a source to the
+    entry's output label, ``verdict=`` sets the recorded verdict (default
+    ``allow``), and ``resource=`` the recorded resource.
+    """
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    if not parts:
+        raise argparse.ArgumentTypeError(
+            "expected TOOL[,KEY=VALUE...], got an empty value"
+        )
+    tool = parts[0]
+    if "=" in tool:
+        raise argparse.ArgumentTypeError(
+            f"the first --prior item must be the prior call's tool name, got {tool!r}"
+        )
+    sources: list[str] = []
+    verdict = Verdict.ALLOW
+    resource: str | None = None
+    for part in parts[1:]:
+        key, sep, value = part.partition("=")
+        if not sep or not key.strip():
+            raise argparse.ArgumentTypeError(
+                f"expected KEY=VALUE after the tool name, got {part!r}"
+            )
+        if key == "source":
+            sources.append(value)
+        elif key == "verdict":
+            try:
+                verdict = Verdict(value)
+            except ValueError:
+                choices = ", ".join(v.value for v in Verdict)
+                raise argparse.ArgumentTypeError(
+                    f"unknown verdict {value!r} (expected one of: {choices})"
+                ) from None
+        elif key == "resource":
+            resource = value
+        else:
+            raise argparse.ArgumentTypeError(
+                f"unknown --prior key {key!r} (expected source, verdict, or resource)"
+            )
+    return CallHistoryEntry(
+        tool_name=tool,
+        verdict=verdict,
+        output_label=_parse_taint(",".join(sources)),
+        resource=resource,
+    )
+
+
+def _chain_rejection(
+    chain: ChainCondition,
+    call: ToolCall,
+    *,
+    history: tuple[CallHistoryEntry, ...] | None,
+) -> str | None:
+    """Return a human reason the chain condition rejected the call, or ``None``.
+
+    Mirrors :meth:`ChainCondition.matches` exactly so the trace never
+    disagrees with the gateway.
+    """
+    if chain.needs_history() and history is None:
+        return "rule references prior calls but no call history is tracked"
+    prior = history or ()
+    if chain.any_prior and not any(
+        m.matches_entry(e) for e in prior for m in chain.any_prior
+    ):
+        return (
+            f"no prior call (of {len(prior)} recorded) matches the "
+            "chain any_prior matchers"
+        )
+    if chain.no_prior:
+        offender = next(
+            (
+                e
+                for e in prior
+                if any(m.matches_entry(e) for m in chain.no_prior)
+            ),
+            None,
+        )
+        if offender is not None:
+            return (
+                f"prior call {offender.tool_name!r} "
+                f"({offender.verdict.value}) matches a chain no_prior matcher"
+            )
+    if chain.provenance is not None and not chain.provenance.matches(
+        call.input_provenance
+    ):
+        return (
+            f"input provenance ({len(call.input_provenance.entries)} "
+            "entr(y/ies)) fails the chain provenance condition"
+        )
+    return None
+
+
 def _clause_rejection(
     selector: Selector,
     call: ToolCall,
     *,
     resource: str | None,
+    history: tuple[CallHistoryEntry, ...] | None = None,
 ) -> str | None:
     """Return a human reason the selector rejected the call, or ``None``.
 
@@ -216,6 +316,10 @@ def _clause_rejection(
         return (
             f"taint {_taint_repr(call.input_label)} fails condition ({detail})"
         )
+    if selector.chain is not None:
+        why = _chain_rejection(selector.chain, call, history=history)
+        if why is not None:
+            return why
     return None
 
 
@@ -271,7 +375,13 @@ def _explain_grants(
     return lines
 
 
-def _explain(policy: Policy, call: ToolCall, *, resource: str | None) -> list[str]:
+def _explain(
+    policy: Policy,
+    call: ToolCall,
+    *,
+    resource: str | None,
+    history: tuple[CallHistoryEntry, ...] | None = None,
+) -> list[str]:
     """Render the first-match trace for ``call`` against ``policy`` as lines."""
     lines: list[str] = []
     lines.append(
@@ -284,13 +394,18 @@ def _explain(policy: Policy, call: ToolCall, *, resource: str | None) -> list[st
     if call.args:
         call_line += f" args={call.args!r}"
     lines.append(call_line)
+    if history:
+        rendered = ", ".join(
+            f"{e.tool_name}({e.verdict.value})" for e in history
+        )
+        lines.append(f"prior:  {rendered}")
     lines.append("first-match trace:")
     matched_id: str | None = None
     for rule in policy.rules:
         if matched_id is not None:
             lines.append(f"  [ skip ] {rule.id}: (already matched earlier)")
             continue
-        reason = _clause_rejection(rule.when, call, resource=resource)
+        reason = _clause_rejection(rule.when, call, resource=resource, history=history)
         if reason is None:
             matched_id = rule.id
             lines.append(f"  [MATCH ] {rule.id}: selector satisfied")
@@ -341,7 +456,11 @@ def _cmd_explain(args: argparse.Namespace) -> int:
         input_label=_parse_taint(args.taint),
         args=dict(args.arg or []),
     )
-    for line in _explain(policy, call, resource=args.resource):
+    # The hypothetical session always *has* a (possibly empty) history on
+    # explain — omitting --prior means "no prior calls", not "untracked",
+    # so chain rules trace like a track_history gateway would decide them.
+    history = tuple(args.prior or [])
+    for line in _explain(policy, call, resource=args.resource, history=history):
         print(line)
     return 0
 
@@ -593,7 +712,16 @@ def _taint_at_least_as_general(
 
 
 def _selector_at_least_as_general(earlier: Selector, later: Selector) -> bool:
-    """True iff ``earlier`` certainly matches every call ``later`` matches."""
+    """True iff ``earlier`` certainly matches every call ``later`` matches.
+
+    Conservative for chain conditions (R53): an earlier rule constraining
+    the session history or provenance is never claimed to be at least as
+    general — a missed shadow warning is safe where a false one is not.
+    A *later* chain rule can still be shadowed by an unconstrained
+    earlier rule (fewer constraints are more general).
+    """
+    if earlier.chain is not None and not earlier.chain.is_empty():
+        return False
     return (
         _pattern_at_least_as_general(earlier.tool, later.tool)
         and (earlier.identity is None or earlier.identity == later.identity)
@@ -643,12 +771,38 @@ def _taint_contradiction(cond: TaintCondition | None) -> str | None:
     return None
 
 
+def _chain_contradiction(chain: ChainCondition | None) -> str | None:
+    """Explain why ``chain`` is unsatisfiable (R53), or None when it is not.
+
+    Conservative, matcher-equality based: ``any_prior`` needs some prior
+    call to match one of its matchers, so if every one of them is also
+    forbidden by ``no_prior`` the condition can never hold; likewise for
+    the provenance ``any_of`` / ``none_of`` matcher lists.
+    """
+    if chain is None:
+        return None
+    if chain.any_prior and set(chain.any_prior) <= set(chain.no_prior):
+        return (
+            "chain clause requires a prior call matching any_prior but "
+            "no_prior forbids every one of its matchers"
+        )
+    prov = chain.provenance
+    if prov is not None and prov.any_of and set(prov.any_of) <= set(prov.none_of):
+        return (
+            "chain provenance clause requires an entry matching any_of but "
+            "none_of forbids every one of its matchers"
+        )
+    return None
+
+
 def _lint(policy: Policy) -> list[str]:
     """Run the static checks and return the findings, in rule order."""
     findings: list[str] = []
     contradictory: set[str] = set()
     for index, rule in enumerate(policy.rules):
-        why = _taint_contradiction(rule.when.taint)
+        why = _taint_contradiction(rule.when.taint) or _chain_contradiction(
+            rule.when.chain
+        )
         if why is not None:
             contradictory.add(rule.id)
             findings.append(f"W002 rule {rule.id!r} can never match: {why}")
@@ -1022,6 +1176,23 @@ def _build_parser() -> argparse.ArgumentParser:
             "Argument on the hypothetical call, repeatable "
             "(e.g. --arg channel=#public --arg dry_run=true). Values true/false "
             "become bools, decimal integers become ints, all else stays a string."
+        ),
+    )
+    explain_p.add_argument(
+        "--prior",
+        action="append",
+        default=None,
+        type=_parse_prior,
+        metavar="TOOL[,KEY=VALUE...]",
+        help=(
+            "A prior call in the hypothetical session (R53 chain rules), "
+            "repeatable and matched in the given order. TOOL is the prior "
+            "call's tool name; optional KEY=VALUE items: source=S (repeatable, "
+            "conf:/integ: prefixes as in --taint) adds S to its output label, "
+            "verdict=V (allow/deny/review/redact, default allow), resource=R. "
+            "Example: --prior 'get_webpage,source=web' --prior "
+            "'send_email,verdict=deny'. Omitting --prior means an empty "
+            "session history (no prior calls), not an untracked one."
         ),
     )
     explain_p.set_defaults(func=_cmd_explain)

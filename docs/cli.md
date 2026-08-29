@@ -81,6 +81,7 @@ $ apg policy explain policies/example.yaml \
 | `--taint` | `a,b,c` | none | Comma-separated taint sources on the call input (e.g. `web,pii`). A `conf:` / `integ:` prefix scopes a source to the confidentiality (resp. integrity) dimension (e.g. `web,conf:pii`). |
 | `--resource` | `R` | none | Target resource of the call, matched against rule resource globs. |
 | `--arg` | `KEY=VALUE` | none | Argument on the hypothetical call. Repeatable. `true`/`false` become bools, decimal integers become ints, everything else stays a string. |
+| `--prior` | `TOOL[,KEY=VALUE...]` | none | A prior call in the hypothetical session, for chain-level rules (R53). Repeatable, matched in the given order. `TOOL` is the prior call's tool name; optional items: `source=S` (repeatable, `conf:`/`integ:` prefixes as in `--taint`) adds a source to its output label, `verdict=V` (`allow`/`deny`/`review`/`redact`, default `allow`), `resource=R`. Omitting `--prior` means an *empty* session history (no prior calls), not an untracked one — chain rules trace exactly as a `track_history` gateway would decide them. |
 
 Exits `0` on success, `1` if the policy is malformed, `2` if the file is missing.
 
@@ -108,10 +109,16 @@ $ apg policy diff policies/old.yaml policies/new.yaml
 Exits `0` whether or not decisions changed (a diff is informational), `1` if a policy is
 malformed, `2` if a file is missing.
 
+The synthetic scenarios carry no session history, so chain-level rules (R53) that
+reference prior calls never match in a diff — a decision change gated on history is
+outside the matrix's reach (probe it with `apg policy explain --prior ...` instead).
+
 ### `apg policy lint`
 
 Static quality checks: rules that can never match (a self-contradictory taint
-clause, W002), rules shadowed by an earlier, at-least-as-general rule (W001),
+clause, or a chain clause whose `any_prior` matchers are all forbidden by
+`no_prior` — W002), rules shadowed by an earlier, at-least-as-general rule
+(W001; conservative — a rule constraining the chain never claims generality),
 declassify grants (R52) whose `when:` condition can never match (W002), and
 unconditional strip-everything declassify grants (W003).
 

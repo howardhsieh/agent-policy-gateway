@@ -237,6 +237,52 @@ class Provenance:
 
 
 @dataclass(frozen=True)
+class CallHistoryEntry:
+    """One recorded call in a gateway's session history (R53).
+
+    A gateway with ``track_history=True`` appends one entry per mediated
+    call — allowed, redacted, reviewed, and denied alike, since a chain
+    policy may care about *attempts* as much as executions — keyed by the
+    calling ``agent_id``. Chain-level policy conditions
+    (``Selector.chain``) match against these entries; the durable
+    per-call record remains the audit log, which carries strictly more
+    detail.
+
+    ``output_label`` is the label the gateway computed for the call's
+    output; for a denied call the output never existed, so match on
+    ``verdict`` when only executed calls should count.
+    """
+
+    tool_name: str
+    verdict: Verdict
+    output_label: TaintLabel = field(default_factory=TaintLabel)
+    agent_id: str | None = None
+    call_id: str | None = None
+    resource: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "tool_name": self.tool_name,
+            "verdict": self.verdict.value,
+            "output_label": self.output_label.to_dict(),
+            "agent_id": self.agent_id,
+            "call_id": self.call_id,
+            "resource": self.resource,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> CallHistoryEntry:
+        return cls(
+            tool_name=d["tool_name"],
+            verdict=Verdict(d["verdict"]),
+            output_label=TaintLabel.from_dict(d.get("output_label") or {}),
+            agent_id=d.get("agent_id"),
+            call_id=d.get("call_id"),
+            resource=d.get("resource"),
+        )
+
+
+@dataclass(frozen=True)
 class ToolCall:
     """A request from an agent to invoke a tool.
 
@@ -340,6 +386,7 @@ def from_json(s: str, cls: type) -> Any:
 
 
 __all__ = [
+    "CallHistoryEntry",
     "Decision",
     "Provenance",
     "ProvenanceEntry",

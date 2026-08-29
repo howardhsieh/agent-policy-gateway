@@ -139,6 +139,30 @@ strip which sources, from which dimension, under what conditions — the
 policy is the sole authority and per-spec `declassifies` is inert. See
 `policies/declassify-sanitizer.yaml` and the Design page's R52 section.
 
+## Rules over the session's history
+
+Some flows are defined by *what happened before*, not by the current call's
+label. A gateway constructed with `track_history=True` records every mediated
+call (tool, verdict, output label), and a rule's `chain:` condition (R53) can
+reference that history:
+
+```yaml
+  - id: deny-send-after-web
+    when:
+      tool: send_email
+      chain:
+        any_prior:
+          - source: web        # an executed call whose output carried web...
+            verdict: allow     # ...taint precedes this send in the session
+    effect:
+      action: deny
+```
+
+Probe chain rules from the CLI with
+`apg policy explain --prior 'get_webpage,source=web' ...`. The Design page's
+R53 section covers the semantics (denied attempts are recorded too; without
+`track_history`, chain rules referencing prior calls never match).
+
 ## Where to go next
 
 - The [Design](design.md) page explains the lattice model, declassification, and

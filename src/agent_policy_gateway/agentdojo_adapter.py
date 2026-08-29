@@ -207,8 +207,15 @@ class GatedAgentDojoRuntime:
         return self._label
 
     def reset_taint(self) -> None:
-        """Reset the accumulated label (call between episodes)."""
+        """Reset the per-episode session state (call between episodes).
+
+        Clears the accumulated taint label and — when the gateway tracks
+        call history (R53) — the recorded history, so chain-level rules
+        see each episode as a fresh session.
+        """
         self._label = TaintLabel()
+        if self._gateway.track_history:
+            self._gateway.reset_history()
 
 
 def wrap_agentdojo_runtime(

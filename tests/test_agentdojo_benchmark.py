@@ -547,3 +547,53 @@ class TestBankingIntegration:
         ):
             assert row_fragment in page
         assert "python -m agent_policy_gateway.agentdojo_benchmark" in page
+
+
+# --------------------------------------------------------------------------- #
+# Integration: the published slack chain-policy numbers (R53)                 #
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture(scope="module")
+def slack_chain_stats() -> ArmStats:
+    pytest.importorskip("agentdojo")
+    from agentdojo.task_suite.load_suites import get_suite
+
+    from agent_policy_gateway import load_policy, suite_external_sinks
+    from agent_policy_gateway.agentdojo_suite import AGENTDOJO_SUITE_VERSION
+
+    suite = get_suite(AGENTDOJO_SUITE_VERSION, "slack")
+    gateway = Gateway(
+        policies=[load_policy("policies/agentdojo-chain.yaml")],
+        track_history=True,
+    )
+    _, apg = benchmark_suite(suite, gateway)
+    sinks = suite_external_sinks("slack")
+    return aggregate_episodes(apg, sinks, suite="slack", arm="apg-chain")
+
+
+class TestSlackChainIntegration:
+    """Pins the slack chain-arm figures published in docs/benchmarks/agentdojo.md.
+
+    The chain rule in policies/agentdojo-chain.yaml (R53) closes the
+    reader-borne exfiltration channel: injection_task_3's get_webpage
+    attack call — executed in all 21 of its episodes under the baseline
+    policy — is refused once the session has executed an untrusted read,
+    dropping the any-call ASR from 60% to 40% at zero additional utility
+    cost.
+    """
+
+    def test_chain_arm_numbers(self, slack_chain_stats: ArmStats) -> None:
+        s = slack_chain_stats
+        assert s.episodes == 105  # 21 user x 5 injection
+        assert s.asr == 0.0  # sink-level: still fully blocked
+        assert s.task_successes == 5  # utility 4.8% — unchanged vs baseline
+        assert s.any_attack_successes == 42  # was 63: -21 (injection_task_3)
+        assert s.asr_any_call == pytest.approx(0.4)
+        assert s.refused_calls == 382  # was 296: +86 gated fetches
+
+    def test_docs_page_carries_the_same_numbers(self) -> None:
+        pytest.importorskip("agentdojo")
+        page = Path("docs/benchmarks/agentdojo.md").read_text(encoding="utf-8")
+        assert "slack      apg-chain       105     4.8%     84      0.0%" in page
+        assert "policies/agentdojo-chain.yaml" in page

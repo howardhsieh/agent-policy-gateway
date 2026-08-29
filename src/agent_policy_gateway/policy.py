@@ -22,6 +22,17 @@ A *policy file* is a YAML document with a small, fixed schema::
               any_of: [pii]          #   matched against the confidentiality
             integrity:               #   (resp. integrity) effective set
               none_of: [web]
+          chain:                     # optional chain-level condition (R53)
+            any_prior:               # >=1 recorded prior call matches >=1 matcher
+              - tool: "get_*"        #   fnmatch glob over the prior call's tool
+                source: web          #   glob over its output label's sources
+                verdict: allow       #   exact verdict; unset = any (denials too)
+                resource: "https://*"
+            no_prior: []             # no recorded prior call matches any matcher
+            provenance:              # condition on the input's provenance chain
+              any_of:
+                - {source: web, tool: "get_*"}
+              none_of: []
         effect:
           action: deny               # allow | deny | review | rate_limit
           reason: "..."              # optional
@@ -54,7 +65,7 @@ from __future__ import annotations
 import fnmatch
 import os
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from enum import Enum
 from pathlib import Path
 
@@ -71,7 +82,14 @@ from pydantic import (
     model_validator,
 )
 
-from agent_policy_gateway.core import TaintLabel, ToolCall
+from agent_policy_gateway.core import (
+    CallHistoryEntry,
+    Provenance,
+    ProvenanceEntry,
+    TaintLabel,
+    ToolCall,
+    Verdict,
+)
 
 
 class PolicyError(ValueError):
@@ -185,6 +203,175 @@ class TaintCondition(BaseModel):
         return True
 
 
+class PriorCallMatcher(BaseModel):
+    """Matches one recorded call in the session history (R53).
+
+    Every field is optional and glob-valued (except ``verdict``); an
+    entry matches when *all* set fields match. An empty matcher matches
+    any recorded call, so ``any_prior: [{}]`` reads "any prior call at
+    all".
+
+    Attributes:
+        tool: fnmatch glob over the prior call's tool name.
+        source: fnmatch glob matched against the prior call's *output
+            label* — satisfied when any source in any dimension matches,
+            so ``source: web`` reads "a call whose output carried web
+            taint".
+        verdict: exact verdict the prior call received (``allow`` /
+            ``deny`` / ``review`` / ``redact``). Unset matches any —
+            note history records denied *attempts* too; set
+            ``verdict: allow`` when only executed calls should count.
+        resource: fnmatch glob over the prior call's resource. A prior
+            call recorded with no resource never matches a set glob
+            (the ``Selector.resource`` precedent).
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    tool: str | None = None
+    source: str | None = None
+    verdict: Verdict | None = None
+    resource: str | None = None
+
+    def matches_entry(self, entry: CallHistoryEntry) -> bool:
+        """True iff ``entry`` satisfies every set field."""
+        if self.tool is not None and not fnmatch.fnmatchcase(
+            entry.tool_name, self.tool
+        ):
+            return False
+        if self.verdict is not None and entry.verdict != self.verdict:
+            return False
+        if self.source is not None and not any(
+            fnmatch.fnmatchcase(s, self.source)
+            for s in entry.output_label.all_sources
+        ):
+            return False
+        if self.resource is not None:
+            if entry.resource is None or not fnmatch.fnmatchcase(
+                entry.resource, self.resource
+            ):
+                return False
+        return True
+
+
+class ProvenanceMatcher(BaseModel):
+    """Matches one entry of the input's provenance chain (R53).
+
+    ``source`` globs the taint source the entry records; ``tool`` globs
+    the tool that introduced it. An entry matches when all set fields
+    match; an empty matcher matches any entry.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    source: str | None = None
+    tool: str | None = None
+
+    def matches_entry(self, entry: ProvenanceEntry) -> bool:
+        """True iff ``entry`` satisfies every set field."""
+        if self.source is not None and not fnmatch.fnmatchcase(
+            entry.source, self.source
+        ):
+            return False
+        if self.tool is not None and not fnmatch.fnmatchcase(
+            entry.tool_name, self.tool
+        ):
+            return False
+        return True
+
+
+class ProvenanceCondition(BaseModel):
+    """Boolean condition on the input's provenance chain (R53).
+
+    ``any_of`` is satisfied when some chain entry matches some matcher;
+    ``none_of`` when no chain entry matches any matcher. Provenance
+    chains are populated only by a gateway with
+    ``track_provenance=True`` — against an empty chain, ``any_of``
+    cannot be satisfied and ``none_of`` is trivially satisfied.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    any_of: tuple[ProvenanceMatcher, ...] = ()
+    none_of: tuple[ProvenanceMatcher, ...] = ()
+
+    def is_empty(self) -> bool:
+        """True iff this condition has no clauses (matches everything)."""
+        return not (self.any_of or self.none_of)
+
+    def matches(self, provenance: Provenance) -> bool:
+        """True iff ``provenance`` satisfies every non-empty clause."""
+        if self.any_of and not any(
+            m.matches_entry(e) for e in provenance.entries for m in self.any_of
+        ):
+            return False
+        if self.none_of and any(
+            m.matches_entry(e) for e in provenance.entries for m in self.none_of
+        ):
+            return False
+        return True
+
+
+class ChainCondition(BaseModel):
+    """Chain-level condition over call history and provenance (R53).
+
+    ``any_prior`` is satisfied when at least one recorded prior call in
+    the session matches at least one of its matchers; ``no_prior`` when
+    no recorded prior call matches any of its matchers. ``provenance``
+    constrains the *current call's input* provenance chain.
+
+    The history clauses need a history to inspect: against a gateway
+    that does not track history (``history=None``, as opposed to an
+    empty recorded history) neither clause can be verified, so a
+    selector carrying one does not match — the ``Selector.resource``
+    precedent, and the reason chain policies require a gateway with
+    ``track_history=True``.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    any_prior: tuple[PriorCallMatcher, ...] = ()
+    no_prior: tuple[PriorCallMatcher, ...] = ()
+    provenance: ProvenanceCondition | None = None
+
+    def is_empty(self) -> bool:
+        """True iff this condition has no clauses (matches every call)."""
+        return not (
+            self.any_prior
+            or self.no_prior
+            or (self.provenance is not None and not self.provenance.is_empty())
+        )
+
+    def needs_history(self) -> bool:
+        """True iff this condition references the session call history."""
+        return bool(self.any_prior or self.no_prior)
+
+    def matches(
+        self,
+        call: ToolCall,
+        *,
+        history: Sequence[CallHistoryEntry] | None = None,
+    ) -> bool:
+        """True iff ``call`` (with its session ``history``) satisfies
+        every non-empty clause."""
+        if self.needs_history():
+            if history is None:
+                return False
+            if self.any_prior and not any(
+                m.matches_entry(e) for e in history for m in self.any_prior
+            ):
+                return False
+            if self.no_prior and any(
+                m.matches_entry(e) for e in history for m in self.no_prior
+            ):
+                return False
+        if self.provenance is not None and not self.provenance.matches(
+            call.input_provenance
+        ):
+            return False
+        return True
+
+
 def _arg_value_equal(expected: object, actual: object) -> bool:
     """Equality for ``arg_equals`` with bool/int type strictness.
 
@@ -219,6 +406,7 @@ class Selector(BaseModel):
     resource: str | None = None
     arg_equals: dict[str, StrictStr | StrictInt | StrictBool] | None = None
     taint: TaintCondition | None = None
+    chain: ChainCondition | None = None
 
     @field_validator("arg_equals")
     @classmethod
@@ -229,7 +417,13 @@ class Selector(BaseModel):
             raise ValueError("arg_equals keys must be non-empty argument names")
         return v
 
-    def matches(self, call: ToolCall, *, resource: str | None = None) -> bool:
+    def matches(
+        self,
+        call: ToolCall,
+        *,
+        resource: str | None = None,
+        history: Sequence[CallHistoryEntry] | None = None,
+    ) -> bool:
         """Return True iff this selector matches ``call``.
 
         ``resource`` is supplied by the caller (typically the gateway)
@@ -238,6 +432,13 @@ class Selector(BaseModel):
         glob but the caller passed ``resource=None``, the selector does
         not match (a resource constraint cannot be satisfied without a
         resource to inspect).
+
+        ``history`` is the session's recorded call history (R53),
+        supplied by a gateway with ``track_history=True``. ``None``
+        means *no history is tracked* — a chain condition referencing
+        prior calls then does not match, exactly like the unsatisfiable
+        resource constraint — while an empty sequence means "no prior
+        calls recorded", which ``no_prior:`` clauses can satisfy.
         """
         if self.tool is not None and not fnmatch.fnmatchcase(call.tool_name, self.tool):
             return False
@@ -253,6 +454,8 @@ class Selector(BaseModel):
                 if not _arg_value_equal(expected, call.args[key]):
                     return False
         if self.taint is not None and not self.taint.matches(call.input_label):
+            return False
+        if self.chain is not None and not self.chain.matches(call, history=history):
             return False
         return True
 
@@ -534,10 +737,17 @@ class Policy(BaseModel):
         call: ToolCall,
         *,
         resource: str | None = None,
+        history: Sequence[CallHistoryEntry] | None = None,
     ) -> Rule | None:
-        """Return the first rule whose selector matches ``call``, else ``None``."""
+        """Return the first rule whose selector matches ``call``, else ``None``.
+
+        ``history`` is the session call history for chain-level rules
+        (R53); ``None`` — the default, and what a gateway without
+        ``track_history`` passes — means history-referencing chain
+        conditions never match.
+        """
         for rule in self.rules:
-            if rule.when.matches(call, resource=resource):
+            if rule.when.matches(call, resource=resource, history=history):
                 return rule
         return None
 
@@ -578,12 +788,16 @@ def load_policies(paths: Iterable[str | os.PathLike[str]]) -> list[Policy]:
 
 __all__ = [
     "Action",
+    "ChainCondition",
     "DIMENSIONS",
     "DeclassifyGrant",
     "DimensionTaintCondition",
     "Effect",
     "Policy",
     "PolicyError",
+    "PriorCallMatcher",
+    "ProvenanceCondition",
+    "ProvenanceMatcher",
     "RedactSpec",
     "Rule",
     "Selector",

@@ -677,3 +677,80 @@ Semantics, chosen deliberately:
 integrity-only endorsement grant for `sanitize_html`, and a
 `pii_redactor` grant conditioned on the *absence* of web taint — a
 redactor fed attacker-authored text must not launder it.
+
+## Chain-level policies (R53)
+
+The label model (R2–R51) answers "what does this value carry?"; some
+policies need to answer "what has this session *done*?". The motivating
+gap is the R50 slack residue: `get_webpage` is an untrusted reader, not
+a sink, so a hijacked agent can exfiltrate by *fetching* an
+attacker-controlled URL that encodes stolen data — no rule over the
+current call's input label distinguishes that fetch from the first,
+legitimate one. R53 adds a `chain:` sub-condition to `Selector`, stated
+over the session's call history and the input's provenance chain:
+
+```yaml
+- id: deny-send-after-web
+  when:
+    tool: send_email
+    chain:
+      any_prior:                 # >=1 recorded prior call matches >=1 matcher
+        - source: web            # glob over that call's *output label*
+          verdict: allow         # only executed calls arm this rule
+      no_prior:                  # no recorded prior call matches any matcher
+        - tool: sanitize_*
+      provenance:                # condition on the input's provenance chain
+        any_of:
+          - {source: web, tool: "get_*"}
+  effect: {action: deny}
+```
+
+Semantics, chosen deliberately:
+
+- **History is gateway state, opt-in.** `Gateway(track_history=True)`
+  records one `CallHistoryEntry` per mediated call — tool, verdict,
+  output label, call id, resource — keyed by `agent_id`, appended on
+  the execute paths only, *after* the decision is final, so a call
+  never sees itself in its own history. The pure `decide()` reads
+  history but records nothing (the rate-limiter peek/consume
+  precedent). `call_history()` / `reset_history()` expose and clear it;
+  the durable record remains the audit log.
+- **Denied attempts are recorded.** A chain policy may care that an
+  agent *tried* something ("no retries after a refusal"), so every
+  verdict lands in history; the matcher's `verdict:` field scopes a
+  rule to executed calls (`verdict: allow`) when only real effects
+  matter. Matching on a prior call's `source:` globs its **output
+  label** across every dimension — "a call that returned web content
+  preceded this one".
+- **Untracked history fails closed at the selector.** `history=None`
+  (a gateway without `track_history`) is distinct from an empty
+  history: a chain condition referencing prior calls does not match at
+  all — `no_prior` included, since "no forbidden call happened" cannot
+  be verified without a record — exactly the `Selector.resource`
+  precedent for an unsuppliable constraint. Chain-history decisions
+  are therefore byte-for-byte pre-R53 unless a deployment opts in.
+- **Provenance clauses ride the existing chains.** `chain.provenance`
+  matches the current call's `input_provenance` entries (R30) —
+  source/tool matcher globs under `any_of`/`none_of` — needing
+  `track_provenance`, not `track_history`. Where the history clauses
+  say "somewhere in this session", provenance says "in *this value's*
+  derivation" — the finer, flow-scoped statement.
+- **Tooling.** `apg policy explain --prior 'get_webpage,source=web'`
+  builds synthetic history (omitting `--prior` means an *empty*
+  history, so traces mirror a tracking gateway); lint W002 extends to
+  unsatisfiable chains (`any_prior` entirely forbidden by `no_prior`,
+  same for provenance `any_of`/`none_of`) and W001 stays conservative
+  (a chain-constrained rule never claims generality); `policy diff`
+  scenarios carry no history, so chain rules are documented as outside
+  the matrix's reach. `WatchedPolicy.first_match` mirrors the new
+  `history` keyword.
+
+The AgentDojo wiring closes the loop: the benchmark gateway now tracks
+history (recording never changes a history-free policy's decisions),
+the adapter's `reset_taint()` also resets it between episodes, and
+`policies/agentdojo-chain.yaml` — the baseline plus
+`deny-web-fetch-after-untrusted-read` — cuts slack's any-call ASR from
+60% to 40% (the whole reader-borne channel) at zero utility cost; see
+`docs/benchmarks/agentdojo.md`. On that scripted replay an input-taint
+rule would score the same; the chain form survives declassification
+and sees denied attempts, which a label cannot express.
