@@ -14,6 +14,8 @@ A *policy file* is a YAML document with a small, fixed schema::
           resource: "https://*"      # str or fnmatch glob, optional
           arg_equals:                # optional literal argument-value matching
             channel: "#public"       # str / int / bool, compared by equality
+          arg_matches:               # optional regex argument matching (R54)
+            recipient: "^UK\\d+$"    # re.search over string values only
           taint:                     # optional condition on input taint
             any_of: [web]            # at least one of these sources present
             all_of: []               # all of these sources present
@@ -397,6 +399,16 @@ class Selector(BaseModel):
     equal to the given value. Comparison is type-strict between ``bool``
     and ``int`` (``true`` does not match ``1``). An empty ``arg_equals``
     mapping, like an absent one, does not constrain the match.
+
+    ``arg_matches`` (R54) matches named call arguments against regular
+    expressions with :func:`re.search` semantics — the JSON Schema
+    ``pattern`` convention, so imported Progent rules keep their
+    meaning. Every listed argument must be present on the call, be a
+    string, and contain a match; a non-string value never matches
+    (anchor with ``\\A...\\Z`` for full-value matching). The empty
+    pattern therefore reads "any string". Like ``arg_equals``, an empty
+    mapping does not constrain the match, and both may constrain the
+    same argument (the call must satisfy each independently).
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -405,6 +417,7 @@ class Selector(BaseModel):
     identity: str | None = None
     resource: str | None = None
     arg_equals: dict[str, StrictStr | StrictInt | StrictBool] | None = None
+    arg_matches: dict[str, StrictStr] | None = None
     taint: TaintCondition | None = None
     chain: ChainCondition | None = None
 
@@ -415,6 +428,24 @@ class Selector(BaseModel):
     ) -> dict[str, StrictStr | StrictInt | StrictBool] | None:
         if v is not None and any(not k.strip() for k in v):
             raise ValueError("arg_equals keys must be non-empty argument names")
+        return v
+
+    @field_validator("arg_matches")
+    @classmethod
+    def _arg_patterns_valid(
+        cls, v: dict[str, StrictStr] | None
+    ) -> dict[str, StrictStr] | None:
+        if v is None:
+            return v
+        if any(not k.strip() for k in v):
+            raise ValueError("arg_matches keys must be non-empty argument names")
+        for key, pattern in v.items():
+            try:
+                re.compile(pattern)
+            except re.error as e:
+                raise ValueError(
+                    f"arg_matches[{key!r}] is not a valid regex: {e}"
+                ) from e
         return v
 
     def matches(
@@ -452,6 +483,13 @@ class Selector(BaseModel):
                 if key not in call.args:
                     return False
                 if not _arg_value_equal(expected, call.args[key]):
+                    return False
+        if self.arg_matches:
+            for key, pattern in self.arg_matches.items():
+                if key not in call.args:
+                    return False
+                value = call.args[key]
+                if not isinstance(value, str) or re.search(pattern, value) is None:
                     return False
         if self.taint is not None and not self.taint.matches(call.input_label):
             return False

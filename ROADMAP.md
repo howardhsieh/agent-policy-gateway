@@ -22,8 +22,6 @@ R55 long-horizon stateful adversarial eval harness → R56 APG/Progent/Fides
 comparison. Multi-day items are split into lettered daily sub-items here
 before implementation; work the FIRST unchecked item each run._
 
-- [ ] **R54. Progent symbolic-rule import PoC.** Translate a subset of
-  Progent's symbolic policy rules into APG policies. Split when reached.
 - [ ] **R55. Long-horizon stateful adversarial eval harness.** Split when
   reached.
 - [ ] **R56. APG / Progent / Fides comparison measurement.** Split when
@@ -42,6 +40,27 @@ before implementation; work the FIRST unchecked item each run._
 ---
 
 ## Done
+
+- [x] **R54. Progent symbolic-rule import PoC.** _2026-08-30_ —
+  `apg policy import-progent` / `convert_progent_policy` translate a
+  Progent policy (JSON of its runtime mapping
+  `{tool: [[priority, effect, condition, fallback], ...]}`, format
+  verified against upstream `secagent/tool.py`) into an ordered
+  first-match APG policy: Progent sort order `(priority, -effect)`
+  preserved, fallbacks mapped (`0`/`1` → deny, `2` → review),
+  `enum`/`const` expanded (capped), the hard-allow (priority 100) and
+  leaky-fallback quirks carried faithfully, per-tool + global
+  default-deny (`--default per-tool` for merging). New
+  `Selector.arg_matches` (per-argument `re.search` regexes, the JSON
+  Schema `pattern` convention) is the load-bearing DSL addition —
+  explain/lint/diff all taught about it (W002 for
+  `arg_equals`-vs-`arg_matches` contradictions, conservative W001).
+  Unsupported constructs fail loudly (never silently weaker); fidelity
+  pinned against a reference evaluator ported from upstream
+  `_check_tool_call`, divergences (absent args fail closed, non-strings
+  vs `pattern`, terminate → deny) each tested. Generic
+  `policy_to_yaml` round-trip serializer; `examples/progent/` demo
+  doubling as a CI check. 173 tests (1226 -> 1399).
 
 - [x] **R53. Chain-level policies.** _2026-08-29_ — rules over the
   session's call history and the input's provenance chain: `chain:`

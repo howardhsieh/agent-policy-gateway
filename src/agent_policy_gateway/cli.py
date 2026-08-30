@@ -47,6 +47,14 @@ Subcommands
     ``0`` when no findings, ``3`` when findings were reported, ``2`` when the
     file is missing, ``1`` when the policy is malformed.
 
+``apg policy import-progent <rules.json> [--name NAME] [--default deny|per-tool] [-o FILE]``
+    Translate a Progent symbolic-rule policy — the JSON serialization of its
+    runtime mapping ``{tool: [[priority, effect, condition, fallback], ...]}``
+    — into an equivalent APG policy YAML (R54), printed to stdout or written
+    with ``--output``. Constructs outside the supported subset fail the import
+    loudly (exit ``1``); the translation is never silently weaker than the
+    source policy. See :mod:`agent_policy_gateway.progent_import`.
+
 ``apg audit diff <old.jsonl> <new.jsonl> [--json] [--top N]``
     Compare two audit logs the way ``policy diff`` compares two policies (R47),
     but by the decisions that were *recorded* rather than the decisions a
@@ -67,6 +75,7 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import json
+import re
 import sys
 
 from agent_policy_gateway.audit import (
@@ -103,6 +112,12 @@ from agent_policy_gateway.policy import (
     TaintCondition,
     _arg_value_equal,
     load_policy,
+)
+from agent_policy_gateway.progent_import import (
+    ProgentImportError,
+    convert_progent_policy,
+    load_progent_policy,
+    policy_to_yaml,
 )
 
 
@@ -298,6 +313,21 @@ def _clause_rejection(
                 return f"argument {key!r} is missing (rule needs {key}={expected!r})"
             if not _arg_value_equal(expected, call.args[key]):
                 return f"argument {key}={call.args[key]!r} != required {expected!r}"
+    if selector.arg_matches:
+        for key, pattern in selector.arg_matches.items():
+            if key not in call.args:
+                return (
+                    f"argument {key!r} is missing (rule needs {key} "
+                    f"matching {pattern!r})"
+                )
+            value = call.args[key]
+            if not isinstance(value, str):
+                return (
+                    f"argument {key}={value!r} is not a string (rule needs "
+                    f"a match for {pattern!r})"
+                )
+            if re.search(pattern, value) is None:
+                return f"argument {key}={value!r} does not match regex {pattern!r}"
     if selector.taint is not None and not selector.taint.matches(call.input_label):
         cond = selector.taint
         detail = (
@@ -672,6 +702,25 @@ def _args_at_least_as_general(
     )
 
 
+def _arg_matches_at_least_as_general(
+    earlier: dict[str, str] | None,
+    later: dict[str, str] | None,
+) -> bool:
+    """True iff ``earlier``'s ``arg_matches`` constraints subsume ``later``'s.
+
+    Conservative (R54): no regex-subsumption reasoning — an earlier
+    constraint subsumes only a later constraint on the same argument with
+    the *identical* pattern; an unset earlier mapping constrains nothing.
+    """
+    if not earlier:
+        return True
+    if not later:
+        return False
+    return all(
+        key in later and later[key] == pattern for key, pattern in earlier.items()
+    )
+
+
 def _taint_at_least_as_general(
     earlier: TaintCondition | None, later: TaintCondition | None
 ) -> bool:
@@ -727,6 +776,7 @@ def _selector_at_least_as_general(earlier: Selector, later: Selector) -> bool:
         and (earlier.identity is None or earlier.identity == later.identity)
         and _pattern_at_least_as_general(earlier.resource, later.resource)
         and _args_at_least_as_general(earlier.arg_equals, later.arg_equals)
+        and _arg_matches_at_least_as_general(earlier.arg_matches, later.arg_matches)
         and _taint_at_least_as_general(earlier.taint, later.taint)
     )
 
@@ -771,6 +821,32 @@ def _taint_contradiction(cond: TaintCondition | None) -> str | None:
     return None
 
 
+def _arg_contradiction(selector: Selector) -> str | None:
+    """Explain why the argument clauses are unsatisfiable (R54), or None.
+
+    A selector constraining the same argument with ``arg_equals`` and
+    ``arg_matches`` can only match when the literal value is a string
+    that satisfies the regex — checkable statically.
+    """
+    if not selector.arg_equals or not selector.arg_matches:
+        return None
+    for key, pattern in selector.arg_matches.items():
+        if key not in selector.arg_equals:
+            continue
+        value = selector.arg_equals[key]
+        if not isinstance(value, str):
+            return (
+                f"arg_equals requires {key}={value!r} but arg_matches "
+                f"{pattern!r} only matches strings"
+            )
+        if re.search(pattern, value) is None:
+            return (
+                f"arg_equals requires {key}={value!r} which does not match "
+                f"the arg_matches regex {pattern!r}"
+            )
+    return None
+
+
 def _chain_contradiction(chain: ChainCondition | None) -> str | None:
     """Explain why ``chain`` is unsatisfiable (R53), or None when it is not.
 
@@ -800,8 +876,10 @@ def _lint(policy: Policy) -> list[str]:
     findings: list[str] = []
     contradictory: set[str] = set()
     for index, rule in enumerate(policy.rules):
-        why = _taint_contradiction(rule.when.taint) or _chain_contradiction(
-            rule.when.chain
+        why = (
+            _taint_contradiction(rule.when.taint)
+            or _chain_contradiction(rule.when.chain)
+            or _arg_contradiction(rule.when)
         )
         if why is not None:
             contradictory.add(rule.id)
@@ -861,6 +939,38 @@ def _cmd_lint(args: argparse.Namespace) -> int:
         print(line)
     print(f"{len(findings)} lint finding(s) in policy {policy.name!r}")
     return 3
+
+
+# --- ``apg policy import-progent`` (R54) ---------------------------------------
+
+
+def _cmd_import_progent(args: argparse.Namespace) -> int:
+    try:
+        progent = load_progent_policy(args.file)
+        policy = convert_progent_policy(
+            progent, name=args.name, default=args.default
+        )
+    except FileNotFoundError:
+        print(f"apg: Progent policy file not found: {args.file}", file=sys.stderr)
+        return 2
+    except ProgentImportError as exc:
+        print(f"apg: cannot import Progent policy: {exc}", file=sys.stderr)
+        return 1
+    text = policy_to_yaml(policy)
+    if args.output is None:
+        sys.stdout.write(text)
+        return 0
+    try:
+        with open(args.output, "w", encoding="utf-8") as fh:
+            fh.write(text)
+    except OSError as exc:
+        print(f"apg: cannot write {args.output}: {exc}", file=sys.stderr)
+        return 2
+    print(
+        f"wrote policy {policy.name!r} ({len(policy.rules)} rule(s)) "
+        f"to {args.output}"
+    )
+    return 0
 
 
 # --- ``apg audit stats`` (R29) -------------------------------------------------
@@ -1265,6 +1375,46 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     lint_p.add_argument("file", help="Path to the policy YAML file.")
     lint_p.set_defaults(func=_cmd_lint)
+
+    import_p = policy_sub.add_parser(
+        "import-progent",
+        help="Translate a Progent symbolic-rule policy (JSON) into APG YAML.",
+        description=(
+            "Read a Progent policy — the JSON serialization of its runtime "
+            "mapping {tool: [[priority, effect, condition, fallback], ...]} — "
+            "and emit the equivalent APG policy YAML (R54). Prints to stdout "
+            "unless --output is given. Exits 0 on success, 2 if the file is "
+            "missing or the output path is unwritable, 1 when the input is "
+            "malformed or uses constructs outside the supported subset."
+        ),
+    )
+    import_p.add_argument("file", help="Path to the Progent policy JSON file.")
+    import_p.add_argument(
+        "--name",
+        default="progent-import",
+        metavar="NAME",
+        help="Name of the generated APG policy (default: progent-import).",
+    )
+    import_p.add_argument(
+        "--default",
+        choices=["deny", "per-tool"],
+        default="deny",
+        help=(
+            "How to carry Progent's default-deny for tools without an entry: "
+            "'deny' (default) appends a global catch-all deny rule, faithful "
+            "when the policy stands alone; 'per-tool' omits it so the rules "
+            "can be merged with other policies (governed tools keep their "
+            "trailing fall-off-the-end rule either way)."
+        ),
+    )
+    import_p.add_argument(
+        "-o",
+        "--output",
+        default=None,
+        metavar="FILE",
+        help="Write the generated YAML to FILE instead of stdout.",
+    )
+    import_p.set_defaults(func=_cmd_import_progent)
 
     audit_p = sub.add_parser(
         "audit",

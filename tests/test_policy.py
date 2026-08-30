@@ -262,6 +262,105 @@ class TestArgEquals:
 
 
 # ---------------------------------------------------------------------------
+# Selector.arg_matches (R54)
+# ---------------------------------------------------------------------------
+
+
+class TestArgMatches:
+    def test_search_semantics(self) -> None:
+        s = Selector(arg_matches={"recipient": "UK"})
+        # re.search, the JSON Schema pattern convention: mid-string hits count.
+        assert s.matches(_args_call(recipient="UK123"))
+        assert s.matches(_args_call(recipient="xxUK123"))
+        assert not s.matches(_args_call(recipient="DE123"))
+
+    def test_anchoring_is_the_authors_job(self) -> None:
+        s = Selector(arg_matches={"recipient": r"\AUK1\Z"})
+        assert s.matches(_args_call(recipient="UK1"))
+        assert not s.matches(_args_call(recipient="UK12"))
+
+    def test_missing_argument_does_not_match(self) -> None:
+        s = Selector(arg_matches={"recipient": "UK"})
+        assert not s.matches(_args_call())
+        assert not s.matches(_args_call(other="UK"))
+
+    def test_non_string_value_never_matches(self) -> None:
+        s = Selector(arg_matches={"n": "1"})
+        assert not s.matches(_args_call(n=1))
+        assert not s.matches(_args_call(n=True))
+        assert not s.matches(_args_call(n=None))
+
+    def test_empty_pattern_means_any_string(self) -> None:
+        s = Selector(arg_matches={"a": ""})
+        assert s.matches(_args_call(a=""))
+        assert s.matches(_args_call(a="anything"))
+        assert not s.matches(_args_call(a=3))
+
+    def test_every_listed_argument_must_match(self) -> None:
+        s = Selector(arg_matches={"a": "^x", "b": "^y"})
+        assert s.matches(_args_call(a="x1", b="y1"))
+        assert not s.matches(_args_call(a="x1", b="z"))
+        assert not s.matches(_args_call(a="x1"))
+
+    def test_combines_with_arg_equals_on_the_same_key(self) -> None:
+        s = Selector(arg_equals={"a": "xy"}, arg_matches={"a": "^x"})
+        assert s.matches(_args_call(a="xy"))
+        assert not s.matches(_args_call(a="xz"))
+
+    def test_absent_and_empty_mapping_do_not_constrain(self) -> None:
+        assert Selector(arg_matches=None).matches(_args_call())
+        assert Selector(arg_matches={}).matches(_args_call())
+
+    def test_rejects_invalid_regex(self) -> None:
+        with pytest.raises(ValidationError, match="regex"):
+            Selector(arg_matches={"a": "("})
+
+    def test_rejects_blank_keys(self) -> None:
+        with pytest.raises(ValidationError):
+            Selector(arg_matches={"": "x"})
+
+    def test_rejects_non_string_patterns(self) -> None:
+        with pytest.raises(ValidationError):
+            Selector(arg_matches={"a": 3})  # type: ignore[dict-item]
+
+    def test_loads_from_yaml(self) -> None:
+        pol = load_policy_str(
+            textwrap.dedent(
+                """\
+                version: 1
+                name: regex-demo
+                rules:
+                  - id: deny-us-recipients
+                    when:
+                      tool: send_money
+                      arg_matches: {recipient: "^US"}
+                    effect: {action: deny}
+                """
+            )
+        )
+        assert pol.first_match(
+            _args_call("send_money", recipient="US99")
+        ) is pol.rules[0]
+        assert pol.first_match(_args_call("send_money", recipient="UK99")) is None
+
+    def test_yaml_rejects_invalid_regex(self) -> None:
+        with pytest.raises(PolicyError, match="arg_matches"):
+            load_policy_str(
+                textwrap.dedent(
+                    """\
+                    version: 1
+                    name: bad
+                    rules:
+                      - id: r1
+                        when:
+                          arg_matches: {x: "("}
+                        effect: {action: deny}
+                    """
+                )
+            )
+
+
+# ---------------------------------------------------------------------------
 # Effect
 # ---------------------------------------------------------------------------
 

@@ -754,3 +754,84 @@ the adapter's `reset_taint()` also resets it between episodes, and
 `docs/benchmarks/agentdojo.md`. On that scripted replay an input-taint
 rule would score the same; the chain form survives declassification
 and sees denied attempts, which a label cannot express.
+
+## Progent rule import (R54)
+
+Progent (Shi et al., "Progent: Programmable Privilege Control for LLM
+Agents"; [`sunblaze-ucb/progent`](https://github.com/sunblaze-ucb/progent))
+guards agent tool calls with per-tool symbolic rules. Its runtime
+representation — verified against upstream `secagent/tool.py` rather
+than paraphrased from the paper — is
+`{tool: [(priority, effect, condition, fallback), ...]}`: rules sorted
+by `(priority, -effect)` (lower priority number first; at a tie,
+*forbid* before *allow*), conditions mapping argument names to JSON
+Schema fragments, bare `re.match` regex strings, or callables, and
+fallbacks saying what a firing forbid does (`0` error message back to
+the agent, `1` terminate the process, `2` ask the user). A tool with no
+entry is denied, as is a call that satisfies no rule of its tool. R54
+is a proof of concept that this rule language embeds into APG's ordered
+first-match policy DSL: `apg policy import-progent` (and
+`convert_progent_policy` under it) translates the JSON serialization of
+that mapping into a plain APG policy — after which the entire existing
+toolchain (explain traces, lint, decision diff, audit, the gateway
+itself) applies to policies authored for a different system.
+
+Decisions worth recording:
+
+- **`Selector.arg_matches` is the load-bearing addition.** Progent's
+  flagship rules are pattern-shaped ("`send_money` only to this IBAN"),
+  which `arg_equals` cannot express. `arg_matches` maps argument names
+  to regexes with `re.search` semantics — deliberately the JSON Schema
+  `pattern` convention, so imported rules keep their meaning; Progent's
+  bare-string shorthand (which upstream checks with `re.match`) is
+  anchored as `\A(?:...)` at translation time. A constrained argument
+  must be present and be a string; the empty pattern reads "any
+  string", which is exactly how `{"type": "string"}` imports. Explain
+  gained an `arg_matches` rejection trace, lint W002 catches an
+  `arg_equals` literal that cannot satisfy the `arg_matches` regex on
+  the same argument, and W001 stays conservative (identical patterns
+  subsume, nothing else claimed — no regex-implication reasoning).
+- **Order and defaults translate structurally.** Rules are emitted in
+  Progent's sorted order; `enum`/`const` restrictions expand into one
+  rule per value combination (capped at 64 — the import fails loudly
+  above it); each governed tool gets a trailing fall-off-the-end rule
+  and, in the default standalone mode, a global catch-all deny mirrors
+  "a tool with no entry is denied" (`--default per-tool` omits the
+  catch-all for merging into larger rule sets). Two upstream quirks are
+  carried faithfully: the *hard allow* (an allow at priority 100 with
+  fallback 0 denies immediately when a present argument fails, so its
+  translation appends a tool-wide deny right after the allow), and the
+  *leaky fallback* (falling off the end is handled with the last
+  examined rule's fallback — so a tool whose last rule says "ask the
+  user" gets a trailing `review`, not `deny`).
+- **Effects map onto the existing action vocabulary.** Forbid+fallback
+  `0` → `deny`; fallback `2` → `review` (APG's escalate-to-human verdict
+  is precisely Progent's interactive confirmation, minus the terminal
+  prompt); fallback `1` → `deny` with a reason noting that Progent
+  would terminate — APG never calls `sys.exit` from a decision.
+- **Unsupported means loud, never weaker.** Callables, five-element
+  self-updating rules (`need_update_policies`), JSON Schema keywords
+  beyond `const`/`enum`/`pattern`/`type: string`, and float/null
+  scalars raise `ProgentImportError`; nothing silently degrades to a
+  more permissive policy. Within the subset, fidelity is tested against
+  a reference evaluator ported from upstream `_check_tool_call`
+  (`tests/test_progent_import.py`), which must agree with the converted
+  policy's first-match decision on a battery of policies × calls.
+- **Documented divergences.** (1) Progent checks a restriction only
+  when the argument is present — an allow rule's constraint on an
+  absent argument passes vacuously. APG requires presence, so
+  translated allow rules are *stricter* (fail closed) and translated
+  forbid rules do not fire on absent arguments (the call then falls to
+  the trailing default). (2) JSON Schema treats `pattern` as
+  inapplicable to non-strings (vacuously valid); `arg_matches` never
+  matches a non-string — again fail-closed for allows. (3) Terminate
+  becomes deny. Each divergence has an explicit test.
+- **`policy_to_yaml` is the other half of the PoC.** The converter's
+  output is a *file*, not just an in-memory object: a generic
+  `Policy` → YAML serializer (defaults pruned, round trip
+  `load_policy_str(policy_to_yaml(p)) == p` pinned for the shipped
+  example policies too) so converted policies are reviewable, lintable
+  artifacts. `examples/progent/` runs the whole path — Progent JSON →
+  YAML → gateway decisions — as a CI sanity check, and the R56
+  comparison now has a mechanical way to run Progent-authored policies
+  under APG.

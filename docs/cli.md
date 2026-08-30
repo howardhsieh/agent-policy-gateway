@@ -27,7 +27,7 @@ number without parsing output.
 | Code | Meaning | Emitted by |
 | --- | --- | --- |
 | `0` | Success — the command ran and found nothing that should fail a build. | every subcommand |
-| `1` | Invalid policy: the file parsed but violates the schema (message is line-located). | `policy validate`, `policy explain`, `policy diff`, `policy lint` |
+| `1` | Invalid policy: the file parsed but violates the schema (message is line-located), or a Progent policy outside the importable subset. | `policy validate`, `policy explain`, `policy diff`, `policy lint`, `policy import-progent` |
 | `2` | Missing file, or an unusable flag combination (`--csv-section` without `--csv`; `-` mixed with paths). | every subcommand |
 | `3` | Findings that should fail a build: lint findings, or a malformed audit-log line. | `policy lint`, `audit stats`, `audit diff` |
 | `4` | Broken audit hash chain. Not emitted by `apg`; reserved here because it is shared with `apg-replay --verify`. | `apg-replay --verify` |
@@ -112,13 +112,19 @@ malformed, `2` if a file is missing.
 The synthetic scenarios carry no session history, so chain-level rules (R53) that
 reference prior calls never match in a diff — a decision change gated on history is
 outside the matrix's reach (probe it with `apg policy explain --prior ...` instead).
+Likewise `arg_matches` regex constraints (R54) are not concretized into scenario
+arguments, so a rule matching only via `arg_matches` decides no scenario; probe those
+with `apg policy explain --arg` too.
 
 ### `apg policy lint`
 
 Static quality checks: rules that can never match (a self-contradictory taint
-clause, or a chain clause whose `any_prior` matchers are all forbidden by
-`no_prior` — W002), rules shadowed by an earlier, at-least-as-general rule
-(W001; conservative — a rule constraining the chain never claims generality),
+clause, a chain clause whose `any_prior` matchers are all forbidden by
+`no_prior`, or an `arg_equals` literal that cannot satisfy the `arg_matches`
+regex on the same argument — W002), rules shadowed by an earlier,
+at-least-as-general rule (W001; conservative — a rule constraining the chain
+never claims generality, and `arg_matches` patterns subsume only identical
+patterns),
 declassify grants (R52) whose `when:` condition can never match (W002), and
 unconditional strip-everything declassify grants (W003).
 
@@ -133,6 +139,37 @@ OK: no lint findings in policy 'example' (4 rule(s))
 
 Exits `0` when clean, **`3` when findings were reported** (so CI fails), `2` if the file
 is missing, `1` if the policy is malformed.
+
+### `apg policy import-progent`
+
+Translate a [Progent](https://github.com/sunblaze-ucb/progent) symbolic-rule
+policy into an equivalent APG policy YAML (R54). The input is the JSON
+serialization of Progent's runtime mapping —
+`{tool: [[priority, effect, condition, fallback], ...]}` — and the output is an
+ordered first-match policy that preserves Progent's evaluation order, its
+effect/fallback semantics (`0`/`1` → `deny`, `2` → `review`), its hard-allow
+quirk, and its per-tool default-deny. Constructs outside the supported subset
+(callables, self-updating rules, JSON Schema keywords beyond
+`const`/`enum`/`pattern`/`type: string`) fail the import loudly — the
+translation is never silently weaker than the source policy. See the
+[design notes](design.md#progent-rule-import-r54) for the full mapping and the
+documented divergences.
+
+```console
+$ apg policy import-progent examples/progent/rules.json -o converted.yaml
+wrote policy 'progent-import' (8 rule(s)) to converted.yaml
+```
+
+| Flag | Argument | Default | Description |
+| --- | --- | --- | --- |
+| `file` (positional) | path | — | Path to the Progent policy JSON file. |
+| `--name` | `NAME` | `progent-import` | Name of the generated APG policy. |
+| `--default` | `deny` \| `per-tool` | `deny` | How Progent's default-deny for tools without an entry is carried over: `deny` appends a global catch-all deny rule (faithful when the policy stands alone); `per-tool` omits it so the rules can be merged with other policies (governed tools keep their trailing fall-off-the-end rule either way). |
+| `-o`, `--output` | `FILE` | stdout | Write the generated YAML to `FILE` instead of stdout. |
+
+Exits `0` on success, `1` when the input is malformed or uses constructs outside
+the supported subset, `2` if the file is missing or the output path is
+unwritable.
 
 ---
 

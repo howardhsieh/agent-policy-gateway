@@ -1,0 +1,12 @@
+{
+  "get_balance": [
+    [1, 0, {}, 0]
+  ],
+  "send_money": [
+    [0, 1, {"recipient": "US.*"}, 0],
+    [1, 0, {"recipient": {"pattern": "^UK12345678901234567890$"}, "amount": {"enum": [10, 100]}}, 0]
+  ],
+  "schedule_transaction": [
+    [0, 0, {"recurring": {"const": false}}, 2]
+  ]
+}

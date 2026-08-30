@@ -128,6 +128,16 @@ from agent_policy_gateway.policy import (
     load_policy,
     load_policy_str,
 )
+from agent_policy_gateway.progent_import import (
+    ProgentImportError,
+    ProgentRule,
+    convert_progent_policy,
+    load_progent_policy,
+    load_progent_policy_str,
+    parse_progent_policy,
+    policy_to_yaml,
+    progent_sorted,
+)
 from agent_policy_gateway.ratelimit import DEFAULT_WINDOW_SECONDS, RateLimiter
 from agent_policy_gateway.reload import (
     WatchedPolicy,
@@ -178,6 +188,8 @@ __all__ = [
     "PolicyReview",
     "PROVENANCE_KWARG",
     "PriorCallMatcher",
+    "ProgentImportError",
+    "ProgentRule",
     "Provenance",
     "ProvenanceCondition",
     "ProvenanceEntry",
@@ -231,10 +243,16 @@ __all__ = [
     "gate_suite",
     "join",
     "join_all",
+    "convert_progent_policy",
     "load_policies",
     "load_policy",
     "load_policy_str",
+    "load_progent_policy",
+    "load_progent_policy_str",
     "openai_tool_specs",
+    "parse_progent_policy",
+    "policy_to_yaml",
+    "progent_sorted",
     "propagate",
     "propagate_provenance",
     "read_audit",
