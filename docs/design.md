@@ -835,3 +835,59 @@ Decisions worth recording:
   YAML → gateway decisions — as a CI sanity check, and the R56
   comparison now has a mechanical way to run Progent-authored policies
   under APG.
+
+## Long-horizon stateful adversarial eval harness (R55)
+
+The R49c episode machinery replays one (user task, injection task) pair
+and the R50 benchmark resets the session between pairs. That isolates the
+per-call decision but cannot express what a long-lived agent session
+exposes: attacker influence that persists and compounds across turns. R55
+adds a harness (`agent_policy_gateway.stateful_eval`) that replays a
+`Scenario` — an ordered tuple of `Turn`s, each a group of `ScriptedCall`s
+— through **one persistent runtime**, resetting the session taint (R49a)
+and the gateway's call history (R53) only once at the start and never
+between turns. The persistence *is* the harness: a chain rule sees the
+turn-1 read when it decides a turn-10 sink, and the taint a reader added
+survives until something declassifies it.
+
+Decisions worth recording:
+
+- **The state carries across turns; that is the only structural change.**
+  `run_scenario` reset-once-at-start (when the runtime exposes
+  `reset_taint()`) then replays every turn's calls in order, snapshotting
+  the session taint at each turn boundary. It is duck-typed to the same
+  `run_function(env, function, kwargs, raise_on_error=False)` surface as
+  `run_episode`, gated or bare, so the harness measures defended and
+  undefended runs with one code path and imports no `agentdojo`.
+- **New horizon-level metrics.** `ScenarioReport` derives
+  `first_compromise_turn` (*when* the session was first breached, not just
+  whether), `taint_persistence` (the longest span in turns any one source
+  stayed live — first appearance through last, so a mid-session declassify
+  correctly shrinks it), plus per-turn taint snapshots, task success, and
+  refusals. `aggregate_scenarios`/`ScenarioStats` fold a family into
+  utility and a `compromise_rate` (armed-scenario denominator, the
+  stateful analogue of R50's ASR).
+- **The benchmark shows what a single episode hides.** `stateful_benchmark`
+  runs a *laundering adversary* family — read untrusted content, do `k`
+  benign turns, then hit a sink (as a legitimate call or an injected
+  attack), in **direct** and **launder** variants (a mid-session
+  `sanitize` declassify, R52) — under three arms. Both defended arms share
+  the identical declassify grant; only the sink rule differs (input label
+  vs. call history). The result: `apg-input-taint` stops every direct
+  attack but the declassify launders the attack too (compromise 0% →
+  100% on laundered scenarios), while `apg-chain` holds at 0% across the
+  whole horizon because the history entry for the earlier read survives the
+  declassify — exactly the robustness the R53 note promised. The cost is
+  utility (chain also blocks legitimate post-read sinks: 33.3% vs input
+  taint's 66.7%). The whole benchmark runs the real gateway over an
+  in-process runtime — no `agentdojo`, no API keys, deterministic — so
+  `tests/test_stateful_eval.py` pins every published rate and
+  `examples/stateful/` asserts the invariants as a CI check.
+- **Still framework-agnostic, and wired to the real suites.**
+  `scenario_from_suite` composes a long-horizon scenario from real
+  AgentDojo tasks (several user tasks as turns, an injection task as the
+  attack turn); an integration test runs one through a `gate_suite`
+  runtime and confirms the turn-1 read's taint is still live at the final
+  turn. A model-in-the-loop long-horizon eval remains future work — R55 is
+  the stateful dimension, and its input-taint-vs-chain split is the
+  measurement R56 (APG / Progent / Fides) builds on.

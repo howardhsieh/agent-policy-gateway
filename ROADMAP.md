@@ -22,8 +22,6 @@ R55 long-horizon stateful adversarial eval harness → R56 APG/Progent/Fides
 comparison. Multi-day items are split into lettered daily sub-items here
 before implementation; work the FIRST unchecked item each run._
 
-- [ ] **R55. Long-horizon stateful adversarial eval harness.** Split when
-  reached.
 - [ ] **R56. APG / Progent / Fides comparison measurement.** Split when
   reached.
 
@@ -40,6 +38,30 @@ before implementation; work the FIRST unchecked item each run._
 ---
 
 ## Done
+
+- [x] **R55. Long-horizon stateful adversarial eval harness.** _2026-08-31_
+  — new `stateful_eval` harness replays a `Scenario` (ordered `Turn`s of
+  `ScriptedCall`s) through **one persistent runtime**, resetting the
+  session taint (R49a) and gateway call history (R53) once at the start and
+  carrying them across every turn — measuring what R49c/R50 reset away:
+  attacker influence that persists and compounds across a long session.
+  `ScenarioReport` derives `first_compromise_turn`, `taint_persistence`
+  (span-shrinking across a mid-session declassify), per-turn taint
+  snapshots, task success, refusals; `aggregate_scenarios`/`ScenarioStats`
+  give utility + an armed-denominator `compromise_rate`; JSONL
+  `write/read_scenarios`; `scenario_from_suite` composes scenarios from
+  real AgentDojo tasks (integration test confirms cross-turn taint
+  persistence through `gate_suite`). New `stateful_benchmark` runs a
+  "laundering adversary" family (read → k benign turns → sink, as a
+  legitimate or injected call, in direct/launder variants) under three arms
+  over the real gateway, deterministic and `agentdojo`-free. Finding
+  (`docs/benchmarks/stateful.md`): `apg-input-taint` stops every direct
+  attack but a mid-session declassify (R52) launders the attack too
+  (compromise 0% → 100% laundered); `apg-chain` (R53) holds at 0% across
+  the whole horizon because the read's history entry survives the
+  declassify, at a utility cost (33.3% vs 66.7%) — the input to R56. New
+  policies `stateful-input-taint.yaml` / `stateful-chain.yaml`, worked
+  example `examples/stateful/`. 30 tests (1399 -> 1429).
 
 - [x] **R54. Progent symbolic-rule import PoC.** _2026-08-30_ —
   `apg policy import-progent` / `convert_progent_policy` translate a

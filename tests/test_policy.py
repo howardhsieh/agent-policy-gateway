@@ -568,7 +568,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 POLICIES_DIR = REPO_ROOT / "policies"
 
 
-def test_policies_directory_has_seven_examples() -> None:
+def test_policies_directory_has_nine_examples() -> None:
     yamls = sorted(POLICIES_DIR.glob("*.yaml"))
     names = {p.name for p in yamls}
     assert names == {
@@ -578,6 +578,8 @@ def test_policies_directory_has_seven_examples() -> None:
         "default.yaml",
         "redact-pii.yaml",
         "research-agent.yaml",
+        "stateful-chain.yaml",
+        "stateful-input-taint.yaml",
         "strict-pii.yaml",
     }
 
