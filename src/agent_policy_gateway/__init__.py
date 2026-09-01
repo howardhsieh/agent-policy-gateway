@@ -74,6 +74,14 @@ from agent_policy_gateway.bench import (
     run_default_suite,
 )
 from agent_policy_gateway.cli import main as cli_main
+from agent_policy_gateway.comparison_benchmark import (
+    CMP_ARMS,
+    CMP_SECRET,
+    CMP_SINKS,
+    CMP_UNTRUSTED,
+    comparison_scenarios,
+    run_comparison,
+)
 from agent_policy_gateway.core import (
     CallHistoryEntry,
     Decision,
@@ -235,13 +243,19 @@ __all__ = [
     "TurnOutcome",
     "Verdict",
     "WatchedPolicy",
+    "CMP_ARMS",
+    "CMP_SECRET",
+    "CMP_SINKS",
+    "CMP_UNTRUSTED",
     "DEMO_SINKS",
     "DEMO_UNTRUSTED",
     "__version__",
     "aggregate_episodes",
     "aggregate_scenarios",
+    "comparison_scenarios",
     "demo_scenarios",
     "read_scenarios",
+    "run_comparison",
     "run_demo",
     "run_scenario",
     "scenario_from_suite",

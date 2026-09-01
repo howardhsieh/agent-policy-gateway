@@ -1,0 +1,84 @@
+version: 1
+name: comparison-fides
+description: |
+  Fides-style dual-label information-flow arm for the R56 comparison
+  benchmark. Fides (Costa et al.) tracks confidentiality and integrity
+  labels and lets only trusted components endorse; this policy is the
+  closest *session-granular* APG rendering of that discipline, built on
+  the R51 dual-label taint:
+
+  * integrity — an external sink is denied while the session's integrity
+    dimension still carries eval:untrusted; a vetted `sanitize` step may
+    *endorse* (strip eval:untrusted from the integrity dimension only),
+    so laundering behaves exactly as it does for the input-taint arm.
+  * confidentiality — an external sink is denied while the session's
+    confidentiality dimension carries eval:secret, and nothing may
+    declassify it: the one attack class only this arm stops in the R56
+    family is exfiltration of secret data through a permitted channel.
+
+  The known limitation the benchmark measures: Fides proper labels
+  individual values, while a session-granular label is laundered by any
+  in-session endorse — see docs/benchmarks/comparison.md.
+declassify:
+  - id: sanitize-endorses-untrusted
+    description: >
+      A vetted sanitize step endorses untrusted content — integrity only,
+      secrecy is never stripped.
+    tool: sanitize
+    sources: ["eval:untrusted"]
+    dimensions: [integrity]
+rules:
+  - id: deny-untrusted-integrity-to-send_money
+    when:
+      tool: send_money
+      taint:
+        integrity:
+          any_of: ["eval:untrusted"]
+    effect:
+      action: deny
+      reason: Unendorsed untrusted content may not drive send_money.
+  - id: deny-untrusted-integrity-to-send_email
+    when:
+      tool: send_email
+      taint:
+        integrity:
+          any_of: ["eval:untrusted"]
+    effect:
+      action: deny
+      reason: Unendorsed untrusted content may not drive send_email.
+  - id: deny-untrusted-integrity-to-post_webpage
+    when:
+      tool: post_webpage
+      taint:
+        integrity:
+          any_of: ["eval:untrusted"]
+    effect:
+      action: deny
+      reason: Unendorsed untrusted content may not drive post_webpage.
+  - id: deny-secret-confidentiality-to-send_money
+    when:
+      tool: send_money
+      taint:
+        confidentiality:
+          any_of: ["eval:secret"]
+    effect:
+      action: deny
+      reason: Secret data may not flow to the external send_money sink.
+  - id: deny-secret-confidentiality-to-send_email
+    when:
+      tool: send_email
+      taint:
+        confidentiality:
+          any_of: ["eval:secret"]
+    effect:
+      action: deny
+      reason: Secret data may not flow to the external send_email sink.
+  - id: deny-secret-confidentiality-to-post_webpage
+    when:
+      tool: post_webpage
+      taint:
+        confidentiality:
+          any_of: ["eval:secret"]
+    effect:
+      action: deny
+      reason: Secret data may not flow to the external post_webpage sink.

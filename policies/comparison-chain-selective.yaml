@@ -1,0 +1,91 @@
+version: 1
+name: comparison-chain-selective
+description: |
+  Selective chain-history arm for the R56 comparison benchmark — the
+  refinement the R55 write-up called for. The plain chain policy
+  (policies/stateful-chain.yaml) holds 0% compromise across the horizon
+  but pays for it by refusing *every* post-read sink, legitimate ones
+  included. This policy makes the chain rule selective on the sink's
+  arguments (R54 `arg_matches`):
+
+  * a sink call whose `recipient` is in the trusted namespace
+    (`trusted:*`) is allowed first-match, whatever the session history —
+    that recovers every legitimate post-read and post-launder flow;
+  * otherwise the R53 chain rule applies: once the session history
+    records an executed untrusted read, any remaining (non-trusted)
+    recipient is denied, laundered or not.
+
+  Compared with a stateless Progent-style allowlist over the same
+  recipient argument, the chain condition only tightens after the
+  session has actually read untrusted content, so a novel recipient in a
+  clean session still works. The concession, measured in
+  docs/benchmarks/comparison.md: an attack that uses a trusted
+  recipient (covert exfiltration through a permitted channel) is
+  observationally identical to the legitimate flow and passes — no
+  call-level policy over the same observables can separate the two.
+declassify:
+  - id: sanitize-strips-untrusted
+    description: A vetted sanitize step clears the untrusted session label.
+    tool: sanitize
+    sources: ["eval:untrusted"]
+rules:
+  - id: allow-trusted-recipient-send_money
+    when:
+      tool: send_money
+      arg_matches:
+        recipient: '\Atrusted:'
+    effect:
+      action: allow
+      reason: Trusted-namespace recipients stay usable across the horizon.
+  - id: deny-send_money-after-untrusted-read
+    when:
+      tool: send_money
+      chain:
+        any_prior:
+          - source: "eval:untrusted"
+            verdict: allow
+    effect:
+      action: deny
+      reason: >-
+        After an untrusted read, send_money to a non-trusted recipient
+        may act on laundered content.
+  - id: allow-trusted-recipient-send_email
+    when:
+      tool: send_email
+      arg_matches:
+        recipient: '\Atrusted:'
+    effect:
+      action: allow
+      reason: Trusted-namespace recipients stay usable across the horizon.
+  - id: deny-send_email-after-untrusted-read
+    when:
+      tool: send_email
+      chain:
+        any_prior:
+          - source: "eval:untrusted"
+            verdict: allow
+    effect:
+      action: deny
+      reason: >-
+        After an untrusted read, send_email to a non-trusted recipient
+        may act on laundered content.
+  - id: allow-trusted-recipient-post_webpage
+    when:
+      tool: post_webpage
+      arg_matches:
+        recipient: '\Atrusted:'
+    effect:
+      action: allow
+      reason: Trusted-namespace recipients stay usable across the horizon.
+  - id: deny-post_webpage-after-untrusted-read
+    when:
+      tool: post_webpage
+      chain:
+        any_prior:
+          - source: "eval:untrusted"
+            verdict: allow
+    effect:
+      action: deny
+      reason: >-
+        After an untrusted read, post_webpage to a non-trusted recipient
+        may exfiltrate laundered content.

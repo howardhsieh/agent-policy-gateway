@@ -60,6 +60,7 @@ nav:
       - Overhead: benchmarks.md
       - AgentDojo: benchmarks/agentdojo.md
       - Long-horizon: benchmarks/stateful.md
+      - Comparison: benchmarks/comparison.md
   - Daily runbook: daily-runbook.md
   - Release: release.md
 

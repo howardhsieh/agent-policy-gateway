@@ -891,3 +891,62 @@ Decisions worth recording:
   turn. A model-in-the-loop long-horizon eval remains future work — R55 is
   the stateful dimension, and its input-taint-vs-chain split is the
   measurement R56 (APG / Progent / Fides) builds on.
+
+## APG / Progent / Fides comparison measurement (R56)
+
+R55 quantified a tension *inside* APG (label state is laundered by a
+legitimate declassify; history state is not, at a utility cost). R56
+turns that into a comparison across the three policy **paradigms** the
+project sits between — Progent-style stateless symbolic rules,
+Fides-style dual-label information-flow control, and APG's stateful
+policies — over one shared long-horizon family
+(`agent_policy_gateway.comparison_benchmark`, published in
+`docs/benchmarks/comparison.md`).
+
+Decisions worth recording:
+
+- **The family gains exactly the observables the paradigms need to come
+  apart.** Sink calls carry a `recipient` argument (trusted namespace /
+  legitimate-but-novel / attacker-controlled) so a symbolic argument
+  rule has something to match; a confidentiality-only source
+  (`read_secret`) joins the untrusted reader so a dual-label policy has
+  something only it can stop; the R55 launder machinery is kept. Ten
+  variants × 3 sinks × horizons 1–3 = 90 scenarios, replayed by the
+  unchanged R55 harness; every arm shares the same runtime, gateway
+  wiring and taint specs, so the arms differ in **nothing but their
+  policy**.
+- **The Progent arm goes through the real R54 pipeline.** Its policy is
+  a Progent-format JSON (`policies/comparison-progent.json`) parsed and
+  converted at run time by `load_progent_policy` /
+  `convert_progent_policy`, not a hand-written imitation — the benchmark
+  doubles as an end-to-end exercise of the importer (anchored bare-regex
+  allowlist, per-tool fall-off-the-end deny).
+- **The Fides arm is an explicit session-granular approximation.**
+  `policies/comparison-fides.yaml` renders Fides' label discipline in
+  APG's own machinery: R51 integrity rules for sinks, confidentiality
+  rules for secret data, and an integrity-only *endorse* grant for the
+  vetted sanitizer. The write-up states the granularity caveat: Fides
+  proper labels individual values, which would put it between the label
+  and history arms (a per-value endorse cannot launder unrelated data).
+- **`apg-chain-selective` is the constructive result.** The refinement
+  the R55 write-up called for: per sink, an `arg_matches` allow for the
+  trusted recipient namespace first-match, then the R53 chain deny. It
+  recovers *all* of the chain arm's lost utility — including the novel
+  recipient a stateless allowlist must refuse — while holding every
+  overt attack at 0%, and it matches the imported Progent policy's
+  compromise profile exactly with strictly more utility: session state
+  dominates the equivalent stateless allowlist on this family.
+- **The impossibility is measured, not just asserted.** In every arm,
+  `covert-launder` compromise equals benign `launder` utility — the
+  covert attack sink call is the same observable event as the
+  legitimate flow (same tool, arguments, session state), so a
+  call-level policy can only choose *where* to pay. The tests pin this
+  equivalence across all six arms; the way out (per-value labels,
+  content inspection) is future work, not a policy-DSL tweak.
+- **The frontier is the finding.** No arm dominates: `apg-chain` is the
+  most robust (20% compromise / 60% utility), `apg-chain-selective` the
+  most useful defended arm (100% / 60%), `fides` the only exfiltration
+  cover (40% / 60%). `no-defense`, `progent` and `apg-input-taint` are
+  dominated. All rates are exact over the family, pinned by
+  `tests/test_comparison_benchmark.py`, and re-asserted by
+  `examples/comparison/` as a CI check.

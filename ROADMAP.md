@@ -22,8 +22,8 @@ R55 long-horizon stateful adversarial eval harness → R56 APG/Progent/Fides
 comparison. Multi-day items are split into lettered daily sub-items here
 before implementation; work the FIRST unchecked item each run._
 
-- [ ] **R56. APG / Progent / Fides comparison measurement.** Split when
-  reached.
+_(Phase 1–3 plan complete — R49–R56 all done. Next items await a new
+plan revision.)_
 
 ## Parked
 
@@ -38,6 +38,31 @@ before implementation; work the FIRST unchecked item each run._
 ---
 
 ## Done
+
+- [x] **R56. APG / Progent / Fides comparison measurement.** _2026-09-01_
+  — new `comparison_benchmark` replays one shared long-horizon family
+  (90 persistent scenarios through the unchanged R55 harness; sinks
+  gain a `recipient` argument and a confidentiality-only `read_secret`
+  source) under six arms differing in nothing but their policy:
+  no-defense, **progent** (real Progent JSON
+  `policies/comparison-progent.json` converted at run time through the
+  R54 importer), **fides** (`comparison-fides.yaml`, R51 dual-label:
+  integrity + confidentiality sink rules, integrity-only endorse
+  grant), the unchanged R55 input-taint/chain arms, and
+  **apg-chain-selective** (`comparison-chain-selective.yaml`: R54
+  `arg_matches` trusted-recipient allow first-match, then the R53
+  chain deny). Findings (`docs/benchmarks/comparison.md`, every rate
+  pinned): laundering flips the label arms across paradigms (fides ≡
+  input-taint on integrity) while both chain arms hold; the selective
+  chain arm recovers *all* the chain arm's utility (100% vs 60%,
+  novel recipient included) at the imported Progent policy's exact
+  compromise profile — session state strictly dominates the stateless
+  allowlist; covert-launder compromise equals benign launder utility
+  in every arm (the impossibility, measured); only fides stops
+  exfiltration (40% compromise) and pays on the benign secret flow;
+  the Pareto frontier {chain, chain-selective, fides} is the result.
+  Worked example `examples/comparison/` as CI check. 26 tests
+  (1429 -> 1455).
 
 - [x] **R55. Long-horizon stateful adversarial eval harness.** _2026-08-31_
   — new `stateful_eval` harness replays a `Scenario` (ordered `Turn`s of
