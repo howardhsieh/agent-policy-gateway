@@ -22,7 +22,7 @@ jobs:
     # 不在 forked PR 上跑（fork 沒辦法存 secret，將來升級才不會壞）
     if: (github.actor != 'dependabot[bot]')
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
 
       - name: Run Semgrep
         run: >-
