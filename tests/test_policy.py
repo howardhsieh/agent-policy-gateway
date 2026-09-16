@@ -28,6 +28,7 @@ from pydantic import ValidationError
 
 from agent_policy_gateway import (
     Action,
+    DimensionTaintCondition,
     Effect,
     Policy,
     PolicyError,
@@ -319,6 +320,7 @@ class TestArgMatches:
         with pytest.raises(ValidationError):
             Selector(arg_matches={"": "x"})
 
+
     def test_rejects_non_string_patterns(self) -> None:
         with pytest.raises(ValidationError):
             Selector(arg_matches={"a": 3})  # type: ignore[dict-item]
@@ -358,6 +360,108 @@ class TestArgMatches:
                     """
                 )
             )
+
+
+# ---------------------------------------------------------------------------
+# Selector.arg_taint (R57)
+# ---------------------------------------------------------------------------
+
+
+def _labeled_call(
+    tool_name: str = "send_email", **arg_labels: TaintLabel
+) -> ToolCall:
+    return ToolCall(tool_name=tool_name, arg_labels=dict(arg_labels))
+
+
+class TestArgTaint:
+    def test_matches_the_named_arguments_value_label(self) -> None:
+        s = Selector(arg_taint={"payload": TaintCondition(any_of=("web",))})
+        assert s.matches(_labeled_call(payload=TaintLabel.of("web")))
+        assert not s.matches(_labeled_call(payload=TaintLabel.of("crm")))
+
+    def test_unlabeled_argument_is_the_empty_label(self) -> None:
+        s = Selector(arg_taint={"payload": TaintCondition(any_of=("web",))})
+        # No label recorded for the argument, or no argument at all: an
+        # any_of requirement cannot be satisfied by the empty label.
+        assert not s.matches(_labeled_call())
+        assert not s.matches(_labeled_call(other=TaintLabel.of("web")))
+
+    def test_none_of_is_satisfied_by_unlabeled_arguments(self) -> None:
+        s = Selector(arg_taint={"payload": TaintCondition(none_of=("web",))})
+        assert s.matches(_labeled_call())
+        assert not s.matches(_labeled_call(payload=TaintLabel.of("web")))
+
+    def test_per_dimension_clauses_read_that_dimension(self) -> None:
+        s = Selector(
+            arg_taint={
+                "payload": TaintCondition(
+                    integrity=DimensionTaintCondition(any_of=("web",))
+                )
+            }
+        )
+        integrity_only = TaintLabel.of_dimensions(integrity=("web",))
+        conf_only = TaintLabel.of_dimensions(confidentiality=("web",))
+        assert s.matches(_labeled_call(payload=integrity_only))
+        assert not s.matches(_labeled_call(payload=conf_only))
+
+    def test_reads_value_labels_not_the_session_label(self) -> None:
+        s = Selector(arg_taint={"payload": TaintCondition(any_of=("web",))})
+        call = ToolCall(
+            tool_name="send_email",
+            input_label=TaintLabel.of("web"),  # session is tainted...
+            arg_labels={},  # ...but no value flowing in carries it
+        )
+        assert not s.matches(call)
+
+    def test_every_listed_argument_must_satisfy_its_condition(self) -> None:
+        s = Selector(
+            arg_taint={
+                "payload": TaintCondition(any_of=("web",)),
+                "recipient": TaintCondition(none_of=("web",)),
+            }
+        )
+        assert s.matches(_labeled_call(payload=TaintLabel.of("web")))
+        assert not s.matches(
+            _labeled_call(
+                payload=TaintLabel.of("web"), recipient=TaintLabel.of("web")
+            )
+        )
+
+    def test_absent_and_empty_mapping_do_not_constrain(self) -> None:
+        assert Selector(arg_taint=None).matches(_args_call())
+        assert Selector(arg_taint={}).matches(_args_call())
+
+    def test_rejects_blank_keys(self) -> None:
+        with pytest.raises(ValidationError):
+            Selector(arg_taint={"": TaintCondition(any_of=("web",))})
+
+    def test_loads_from_yaml(self) -> None:
+        policy = load_policy_str(
+            textwrap.dedent(
+                """
+                version: 1
+                name: p
+                rules:
+                  - id: deny-untrusted-payload
+                    when:
+                      tool: send_email
+                      arg_taint:
+                        payload:
+                          integrity:
+                            any_of: [web]
+                    effect: {action: deny}
+                """
+            )
+        )
+        rule = policy.rules[0]
+        assert rule.when.arg_taint is not None
+        label = TaintLabel.of_dimensions(integrity=("web",))
+        assert rule.when.matches(
+            ToolCall(tool_name="send_email", arg_labels={"payload": label})
+        )
+        assert not rule.when.matches(ToolCall(tool_name="send_email"))
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -568,7 +672,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 POLICIES_DIR = REPO_ROOT / "policies"
 
 
-def test_policies_directory_has_eleven_examples() -> None:
+def test_policies_directory_has_twelve_examples() -> None:
     yamls = sorted(POLICIES_DIR.glob("*.yaml"))
     names = {p.name for p in yamls}
     assert names == {
@@ -576,6 +680,7 @@ def test_policies_directory_has_eleven_examples() -> None:
         "agentdojo.yaml",
         "comparison-chain-selective.yaml",
         "comparison-fides.yaml",
+        "comparison-value-taint.yaml",
         "declassify-sanitizer.yaml",
         "default.yaml",
         "redact-pii.yaml",

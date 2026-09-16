@@ -114,17 +114,20 @@ reference prior calls never match in a diff — a decision change gated on histo
 outside the matrix's reach (probe it with `apg policy explain --prior ...` instead).
 Likewise `arg_matches` regex constraints (R54) are not concretized into scenario
 arguments, so a rule matching only via `arg_matches` decides no scenario; probe those
-with `apg policy explain --arg` too.
+with `apg policy explain --arg` too. The same holds for `arg_taint` per-value label
+conditions (R57): synthetic scenarios carry no value ledger, so their argument labels
+are the empty label — an `any_of` requirement never matches in a diff.
 
 ### `apg policy lint`
 
 Static quality checks: rules that can never match (a self-contradictory taint
-clause, a chain clause whose `any_prior` matchers are all forbidden by
+or per-argument `arg_taint` clause, a chain clause whose `any_prior` matchers
+are all forbidden by
 `no_prior`, or an `arg_equals` literal that cannot satisfy the `arg_matches`
 regex on the same argument — W002), rules shadowed by an earlier,
 at-least-as-general rule (W001; conservative — a rule constraining the chain
-never claims generality, and `arg_matches` patterns subsume only identical
-patterns),
+or an argument's value label never claims generality, and `arg_matches`
+patterns subsume only identical patterns),
 declassify grants (R52) whose `when:` condition can never match (W002), and
 unconditional strip-everything declassify grants (W003).
 

@@ -46,6 +46,18 @@ next call. Denied calls contribute nothing — their output never enters the
 conversation. :attr:`GatedAgentDojoRuntime.taint_label` exposes the current
 label and :meth:`GatedAgentDojoRuntime.reset_taint` resets it between
 episodes.
+
+**Per-value taint (R57, opt-in).** With ``track_values=True`` the wrapper
+additionally keeps a :class:`~agent_policy_gateway.value_flow.ValueLedger`:
+each executed call's *output value* is recorded with the label
+``propagate(labels of its argument values, spec)`` — the R51 rule applied
+at value scope — and each call's arguments are looked up in the ledger
+(exact match) to populate ``ToolCall.arg_labels``, the observable an
+``arg_taint`` policy sub-condition reads. The session-level label above is
+unchanged by the ledger, so the two granularities coexist: ``taint:``
+rules keep reading the session, ``arg_taint:`` rules read the value
+actually flowing into each argument. :meth:`GatedAgentDojoRuntime.reset_taint`
+clears the ledger together with the session label.
 """
 
 from __future__ import annotations
@@ -60,7 +72,8 @@ from agent_policy_gateway.gateway import (
     PolicyDenied,
     PolicyReview,
 )
-from agent_policy_gateway.taint import ToolTaintSpec
+from agent_policy_gateway.taint import ToolTaintSpec, propagate
+from agent_policy_gateway.value_flow import ValueLedger
 
 #: Default ``agent_id`` stamped on audit records when none is supplied.
 DEFAULT_AGENTDOJO_AGENT_ID = "agentdojo"
@@ -100,6 +113,7 @@ class GatedAgentDojoRuntime:
         *,
         resource_args: Mapping[str, str] | None = None,
         agent_id: str | None = None,
+        track_values: bool = False,
     ) -> None:
         if not callable(getattr(runtime, "run_function", None)):
             raise TypeError(
@@ -111,6 +125,7 @@ class GatedAgentDojoRuntime:
         self._resource_args = dict(resource_args or {})
         self._agent_id = agent_id or DEFAULT_AGENTDOJO_AGENT_ID
         self._label = TaintLabel()
+        self._ledger: ValueLedger | None = ValueLedger() if track_values else None
 
     # ----- duck-typed FunctionsRuntime surface --------------------------------
 
@@ -153,12 +168,17 @@ class GatedAgentDojoRuntime:
             if value is not None:
                 resource = value if isinstance(value, str) else str(value)
 
+        arg_labels: dict[str, TaintLabel] = {}
+        if self._ledger is not None:
+            arg_labels = self._ledger.labels_for_args(arguments)
+
         call = ToolCall(
             tool_name=function,
             args=arguments,
             input_label=self._label,
             agent_id=self._agent_id,
             call_id=uuid.uuid4().hex,
+            arg_labels=arg_labels,
         )
 
         def _invoke(**tool_args: Any) -> tuple[Any, str | None]:
@@ -185,6 +205,22 @@ class GatedAgentDojoRuntime:
             return "", _format_error(exc)
 
         self._label = decision.output_label
+        if self._ledger is not None:
+            # Per-value propagation (R57): the output value's label is the
+            # R51 rule applied at value scope — join of the labels of the
+            # values that flowed *in*, raised/stripped by the tool's spec.
+            # Deliberately independent of the session-level output label,
+            # which joins everything the whole conversation ever touched.
+            # ``value`` is _invoke's (result, error) pair; error is None
+            # here or the except clause above would have taken over.
+            result_value, _ = value
+            self._ledger.record(
+                result_value,
+                propagate(
+                    arg_labels.values(),
+                    self._gateway.tool_specs.get(function),
+                ),
+            )
         return value
 
     def __getattr__(self, name: str) -> Any:
@@ -206,14 +242,22 @@ class GatedAgentDojoRuntime:
         """The episode's accumulated taint label."""
         return self._label
 
+    @property
+    def value_ledger(self) -> ValueLedger | None:
+        """The per-value ledger (R57), or ``None`` when values are untracked."""
+        return self._ledger
+
     def reset_taint(self) -> None:
         """Reset the per-episode session state (call between episodes).
 
-        Clears the accumulated taint label and — when the gateway tracks
-        call history (R53) — the recorded history, so chain-level rules
-        see each episode as a fresh session.
+        Clears the accumulated taint label, the per-value ledger (R57)
+        when one is tracked, and — when the gateway tracks call history
+        (R53) — the recorded history, so chain-level rules see each
+        episode as a fresh session.
         """
         self._label = TaintLabel()
+        if self._ledger is not None:
+            self._ledger.reset()
         if self._gateway.track_history:
             self._gateway.reset_history()
 
@@ -225,6 +269,7 @@ def wrap_agentdojo_runtime(
     taint_specs: Mapping[str, ToolTaintSpec] | None = None,
     resource_args: Mapping[str, str] | None = None,
     agent_id: str | None = None,
+    track_values: bool = False,
 ) -> GatedAgentDojoRuntime:
     """Mount an AgentDojo-style ``runtime`` behind ``gateway``.
 
@@ -233,7 +278,9 @@ def wrap_agentdojo_runtime(
     ``agentdojo:untrusted`` source). ``resource_args`` declares per-function
     which argument carries the policy resource for :class:`Selector`
     ``resource`` matching. ``agent_id`` stamps audit records (default
-    :data:`DEFAULT_AGENTDOJO_AGENT_ID`).
+    :data:`DEFAULT_AGENTDOJO_AGENT_ID`). ``track_values`` opts into the
+    R57 per-value ledger (see the class docstring); off, every record and
+    decision is byte-for-byte pre-R57.
     """
     for name, spec in (taint_specs or {}).items():
         gateway.register_tool(name, spec)
@@ -242,6 +289,7 @@ def wrap_agentdojo_runtime(
         runtime,
         resource_args=resource_args,
         agent_id=agent_id,
+        track_values=track_values,
     )
 
 

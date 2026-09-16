@@ -338,6 +338,148 @@ class TestTaintAccumulation:
 
 
 # --------------------------------------------------------------------------- #
+# Per-value taint tracking (R57)                                              #
+# --------------------------------------------------------------------------- #
+
+
+def _value_runtime() -> _FakeRuntime:
+    rt = _FakeRuntime()
+    rt.functions["read_doc"] = lambda: "the untrusted document"
+    rt.functions["summarize"] = lambda text: f"summary of {text}"
+    rt.functions["send_email"] = lambda recipient, body: {"to": recipient}
+    return rt
+
+
+def _deny_untrusted_body() -> Policy:
+    """Deny ``send_email`` when the *body value* derives from untrusted data."""
+    return Policy(
+        name="value-guard",
+        rules=(
+            Rule(
+                id="deny-untrusted-body",
+                when=Selector(
+                    tool="send_email",
+                    arg_taint={"body": TaintCondition(any_of=(UNTRUSTED,))},
+                ),
+                effect=Effect(action=Action.DENY, reason="tainted value at sink"),
+            ),
+            Rule(id="allow-rest", when=Selector(), effect=Effect(action=Action.ALLOW)),
+        ),
+    )
+
+
+class TestValueTracking:
+    def _gated(self) -> GatedAgentDojoRuntime:
+        gateway = Gateway(policies=[_deny_untrusted_body()])
+        return wrap_agentdojo_runtime(
+            gateway,
+            _value_runtime(),
+            taint_specs={"read_doc": ToolTaintSpec.of(adds=(UNTRUSTED,))},
+            track_values=True,
+        )
+
+    def test_off_by_default(self) -> None:
+        gateway = Gateway(policies=[_allow_all()])
+        gated = wrap_agentdojo_runtime(gateway, _value_runtime())
+        assert gated.value_ledger is None
+        gated.run_function(None, "read_doc", {})
+        # Without a ledger no arg_labels exist, so a value rule never fires.
+
+    def test_reader_output_is_recorded_with_its_spec_adds(self) -> None:
+        gated = self._gated()
+        gated.run_function(None, "read_doc", {})
+        ledger = gated.value_ledger
+        assert ledger is not None
+        assert UNTRUSTED in ledger.label_of("the untrusted document").sources
+
+    def test_derived_value_inherits_by_propagation(self) -> None:
+        gated = self._gated()
+        gated.run_function(None, "read_doc", {})
+        result, error = gated.run_function(
+            None, "summarize", {"text": "the untrusted document"}
+        )
+        assert error is None
+        assert gated.value_ledger is not None
+        assert UNTRUSTED in gated.value_ledger.label_of(result).sources
+
+    def test_value_rule_denies_tainted_body_allows_clean(self) -> None:
+        gated = self._gated()
+        gated.run_function(None, "read_doc", {})
+        # Session label is untrusted now, but the rule reads the value:
+        _, error = gated.run_function(
+            None, "send_email", {"recipient": "mom", "body": "my own words"}
+        )
+        assert error is None
+        _, error = gated.run_function(
+            None,
+            "send_email",
+            {"recipient": "mom", "body": "the untrusted document"},
+        )
+        assert error is not None and "deny-untrusted-body" in error
+
+    def test_denied_call_records_no_output_value(self) -> None:
+        gated = self._gated()
+        gated.run_function(None, "read_doc", {})
+        gated.run_function(
+            None,
+            "send_email",
+            {"recipient": "mom", "body": "the untrusted document"},
+        )
+        assert gated.value_ledger is not None
+        assert len(gated.value_ledger) == 1  # only the read_doc output
+
+    def test_errored_call_records_no_output_value(self) -> None:
+        rt = _FakeRuntime()
+        rt.functions["boom"] = lambda: (_ for _ in ()).throw(ValueError("kaput"))
+        gateway = Gateway(policies=[_allow_all()])
+        gated = wrap_agentdojo_runtime(
+            gateway,
+            rt,
+            taint_specs={"boom": ToolTaintSpec.of(adds=(UNTRUSTED,))},
+            track_values=True,
+        )
+        gated.run_function(None, "boom", {})
+        assert gated.value_ledger is not None
+        assert gated.value_ledger.is_empty()
+
+    def test_arg_labels_are_stamped_on_the_audited_call(self) -> None:
+        records: list[Any] = []
+        gateway = Gateway(
+            policies=[_allow_all()], audit_writer=lambda c, d: records.append(c)
+        )
+        gated = wrap_agentdojo_runtime(
+            gateway,
+            _value_runtime(),
+            taint_specs={"read_doc": ToolTaintSpec.of(adds=(UNTRUSTED,))},
+            track_values=True,
+        )
+        gated.run_function(None, "read_doc", {})
+        gated.run_function(
+            None,
+            "send_email",
+            {"recipient": "mom", "body": "the untrusted document"},
+        )
+        sink_call = records[-1]
+        assert set(sink_call.arg_labels) == {"body"}
+        assert UNTRUSTED in sink_call.arg_labels["body"].sources
+        assert "arg_labels" in sink_call.to_dict()
+        assert "arg_labels" not in records[0].to_dict()  # clean call: legacy shape
+
+    def test_reset_taint_clears_the_ledger(self) -> None:
+        gated = self._gated()
+        gated.run_function(None, "read_doc", {})
+        assert gated.value_ledger is not None and not gated.value_ledger.is_empty()
+        gated.reset_taint()
+        assert gated.value_ledger.is_empty()
+        _, error = gated.run_function(
+            None,
+            "send_email",
+            {"recipient": "mom", "body": "the untrusted document"},
+        )
+        assert error is None  # the value's provenance was forgotten with the episode
+
+
+# --------------------------------------------------------------------------- #
 # Resource binding + audit                                                    #
 # --------------------------------------------------------------------------- #
 

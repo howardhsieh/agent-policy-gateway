@@ -328,6 +328,14 @@ def _clause_rejection(
                 )
             if re.search(pattern, value) is None:
                 return f"argument {key}={value!r} does not match regex {pattern!r}"
+    if selector.arg_taint:
+        for key, condition in selector.arg_taint.items():
+            label = call.arg_labels.get(key, TaintLabel())
+            if not condition.matches(label):
+                return (
+                    f"argument {key!r} value label {_taint_repr(label)} "
+                    "fails the arg_taint condition"
+                )
     if selector.taint is not None and not selector.taint.matches(call.input_label):
         cond = selector.taint
         detail = (
@@ -763,13 +771,16 @@ def _taint_at_least_as_general(
 def _selector_at_least_as_general(earlier: Selector, later: Selector) -> bool:
     """True iff ``earlier`` certainly matches every call ``later`` matches.
 
-    Conservative for chain conditions (R53): an earlier rule constraining
-    the session history or provenance is never claimed to be at least as
-    general — a missed shadow warning is safe where a false one is not.
-    A *later* chain rule can still be shadowed by an unconstrained
-    earlier rule (fewer constraints are more general).
+    Conservative for chain conditions (R53) and per-value ``arg_taint``
+    conditions (R57): an earlier rule constraining the session history,
+    provenance, or an argument's value label is never claimed to be at
+    least as general — a missed shadow warning is safe where a false one
+    is not. A *later* chain or arg_taint rule can still be shadowed by an
+    unconstrained earlier rule (fewer constraints are more general).
     """
     if earlier.chain is not None and not earlier.chain.is_empty():
+        return False
+    if earlier.arg_taint and any(not c.is_empty() for c in earlier.arg_taint.values()):
         return False
     return (
         _pattern_at_least_as_general(earlier.tool, later.tool)
@@ -871,6 +882,17 @@ def _chain_contradiction(chain: ChainCondition | None) -> str | None:
     return None
 
 
+def _arg_taint_contradiction(selector: Selector) -> str | None:
+    """Explain why an ``arg_taint`` condition is unsatisfiable (R57), or None."""
+    if not selector.arg_taint:
+        return None
+    for key, cond in selector.arg_taint.items():
+        why = _taint_contradiction(cond)
+        if why is not None:
+            return f"arg_taint[{key!r}]: {why}"
+    return None
+
+
 def _lint(policy: Policy) -> list[str]:
     """Run the static checks and return the findings, in rule order."""
     findings: list[str] = []
@@ -880,6 +902,7 @@ def _lint(policy: Policy) -> list[str]:
             _taint_contradiction(rule.when.taint)
             or _chain_contradiction(rule.when.chain)
             or _arg_contradiction(rule.when)
+            or _arg_taint_contradiction(rule.when)
         )
         if why is not None:
             contradictory.add(rule.id)

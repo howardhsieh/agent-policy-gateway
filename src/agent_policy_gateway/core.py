@@ -286,8 +286,13 @@ class CallHistoryEntry:
 class ToolCall:
     """A request from an agent to invoke a tool.
 
-    ``input_label`` is the join of taint labels on every argument value;
-    the gateway computes it before the call is dispatched.
+    ``input_label`` is the *session-level* label — the join of every
+    taint the conversation has accumulated when the call is made.
+    ``arg_labels`` (R57) is the *per-value* view: the label of the value
+    actually flowing into each named argument, populated by a runtime
+    that tracks values (see :mod:`agent_policy_gateway.value_flow`).
+    Arguments carrying no known labeled value are simply absent, so a
+    call from a value-blind runtime keeps the pre-R57 record shape.
     """
 
     tool_name: str
@@ -296,6 +301,7 @@ class ToolCall:
     agent_id: str | None = None
     call_id: str | None = None
     input_provenance: Provenance = field(default_factory=Provenance)
+    arg_labels: dict[str, TaintLabel] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -308,6 +314,11 @@ class ToolCall:
         # Serialized only when present so legacy records keep their shape.
         if not self.input_provenance.is_empty():
             out["input_provenance"] = self.input_provenance.to_dict()
+        # Serialized only when a value-tracking runtime attached labels (R57).
+        if self.arg_labels:
+            out["arg_labels"] = {
+                name: label.to_dict() for name, label in self.arg_labels.items()
+            }
         return out
 
     @classmethod
@@ -319,6 +330,10 @@ class ToolCall:
             agent_id=d.get("agent_id"),
             call_id=d.get("call_id"),
             input_provenance=Provenance.from_dict(d.get("input_provenance") or {}),
+            arg_labels={
+                name: TaintLabel.from_dict(ld)
+                for name, ld in (d.get("arg_labels") or {}).items()
+            },
         )
 
 

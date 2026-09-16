@@ -1,11 +1,11 @@
-"""Entry point for the APG / Progent / Fides comparison demo (R56).
+"""Entry point for the APG / Progent / Fides comparison demo (R56 + R57).
 
 Run from the repository root::
 
     python -m examples.comparison
 
-Replays the comparison scenario family under all six arms, prints the
-per-variant matrices, then checks the R56 invariants and exits 0 only
+Replays the comparison scenario family under all seven arms, prints the
+per-variant matrices, then checks the R56/R57 invariants and exits 0 only
 when every one holds — so the entry point doubles as a CI sanity check.
 """
 
@@ -22,7 +22,7 @@ from examples.comparison import expectations_hold
 
 def main() -> int:
     summaries = run_comparison()
-    print("=== APG / Progent / Fides comparison benchmark (R56) ===")
+    print("=== APG / Progent / Fides comparison benchmark (R56 + R57) ===")
     print(render_comparison_table(summaries))
     print("=== invariants ===")
     code = 0

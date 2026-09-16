@@ -141,6 +141,27 @@ class TestToolCall:
         c = ToolCall.from_dict(d)
         assert c.input_label == TaintLabel()
 
+    def test_arg_labels_default_empty_and_keep_legacy_shape(self) -> None:
+        c = ToolCall(tool_name="send_email")
+        assert c.arg_labels == {}
+        assert "arg_labels" not in c.to_dict()
+
+    def test_arg_labels_round_trip(self) -> None:
+        c = ToolCall(
+            tool_name="send_email",
+            args={"body": "doc"},
+            arg_labels={
+                "body": TaintLabel.of_dimensions(
+                    integrity=("web",), confidentiality=("pii",)
+                )
+            },
+        )
+        d = c.to_dict()
+        assert "arg_labels" in d
+        restored = ToolCall.from_dict(d)
+        assert restored == c
+        assert "web" in restored.arg_labels["body"].integrity_sources
+
 
 # --- Verdict + Decision --------------------------------------------------------
 

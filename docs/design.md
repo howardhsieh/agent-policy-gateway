@@ -936,13 +936,14 @@ Decisions worth recording:
   overt attack at 0%, and it matches the imported Progent policy's
   compromise profile exactly with strictly more utility: session state
   dominates the equivalent stateless allowlist on this family.
-- **The impossibility is measured, not just asserted.** In every arm,
-  `covert-launder` compromise equals benign `launder` utility — the
-  covert attack sink call is the same observable event as the
-  legitimate flow (same tool, arguments, session state), so a
-  call-level policy can only choose *where* to pay. The tests pin this
-  equivalence across all six arms; the way out (per-value labels,
-  content inspection) is future work, not a policy-DSL tweak.
+- **The impossibility is measured, not just asserted.** In every
+  session-scoped arm, `covert-launder` compromise equals benign
+  `launder` utility — the covert attack sink call is the same observable
+  event as the legitimate flow (same tool, session state), so a
+  call-level policy over those observables can only choose *where* to
+  pay. The tests pin this equivalence across the six R56 arms; the way
+  out the write-up named — per-value labels — is what R57 then built
+  (see below), and it breaks the equivalence by construction.
 - **The frontier is the finding.** No arm dominates: `apg-chain` is the
   most robust (20% compromise / 60% utility), `apg-chain-selective` the
   most useful defended arm (100% / 60%), `fides` the only exfiltration
@@ -950,3 +951,61 @@ Decisions worth recording:
   dominated. All rates are exact over the family, pinned by
   `tests/test_comparison_benchmark.py`, and re-asserted by
   `examples/comparison/` as a CI check.
+
+## Per-value taint labels (R57)
+
+R56 ended on two residuals with one shared root: the covert attack
+(finding 3) and the fides secret-flow trade (finding 4) are both cases
+where the policy can see *that* the session carries a source but not
+*which value* carries it. R57 adds the missing granularity — labels
+attached to values, both R51 dimensions per value — as three small
+pieces plus a benchmark arm:
+
+- **`value_flow.ValueLedger` is the value-flow API.** An exact-match
+  mapping from concrete tool-output values to `TaintLabel`s: `record`
+  joins on re-record (a value that ever carried a source still carries
+  it) and skips empty labels (a ubiquitous clean `"ok"` can never alias
+  a tainted value) and unhashable values; `labels_for_args` returns the
+  per-argument labels a call's arguments carry. One ledger tracks one
+  session and resets with it.
+- **The adapter threads it, opt-in.** `wrap_agentdojo_runtime(...,
+  track_values=True)` gives the gated runtime a ledger: each call's
+  arguments are looked up to populate the new `ToolCall.arg_labels`
+  (serialized only when non-empty — legacy audit records keep their
+  shape), and each *executed* call's output value is recorded with
+  `propagate(labels of its argument values, spec)` — the same R51
+  per-dimension rule the session label uses, applied at value scope, so
+  a reader's output is born tainted and a `sanitize` output *derived
+  from* a tainted input inherits the taint through the hop. The
+  session-level label is untouched; the two granularities coexist.
+  Denied and errored calls record nothing. Off (the default),
+  everything is byte-for-byte pre-R57.
+- **`Selector.arg_taint` is the policy observable.** A mapping from
+  argument name to `TaintCondition`, evaluated against the label of the
+  value flowing into that argument; an argument with no recorded label
+  (or a value-blind runtime) is the empty label, so `any_of` deny rules
+  never fire on clean values. The CLI explain trace renders arg_taint
+  rejections; lint treats a self-contradictory per-argument condition
+  as W002 and — like chain rules — never lets an arg_taint rule claim
+  W001 generality.
+- **The `apg-value-taint` arm measures what it buys.** The R56 family
+  gains the per-value observable (distinct runtime return values, a
+  `payload` argument on every sink: the agent's own clean text on
+  benign flows, the read/laundered/secret value on attacks) with the
+  ledger on for *every* defended arm — the six R56 matrices are pinned
+  unchanged, so the extension provably didn't move the old measurement.
+  `policies/comparison-value-taint.yaml` (per-sink integrity +
+  confidentiality `arg_taint` rules, no session rule, no grant) then
+  closes both residuals on these observables: covert compromise 0% with
+  benign launder utility 100% (the finding-3 equivalence breaks), and
+  `exfil` 0% with benign `secret` 100% (the finding-4 trade dissolves) —
+  100% utility / 0% compromise overall, above the whole R56 frontier.
+- **The boundary is stated, and measured as scope.** Exact-match
+  propagation sees only derivations the runtime mediates: a laundering
+  hop through a mediated `sanitize` call is tracked, a paraphrase by the
+  model is not. The 0% columns are claims about mediated-derivation
+  attacks; `docs/benchmarks/comparison.md` finding 6 spells out the
+  re-opened residual, which is R59 (model-in-the-loop) territory. R52
+  governance is also deliberately session-scoped for now: declassify
+  grants strip the session label, while value labels propagate by spec
+  only — a per-value declassify is future work, not smuggled in.

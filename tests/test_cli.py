@@ -137,6 +137,29 @@ class TestExplain:
         assert "review-pii-egress" in out
         assert "matched rule: allow-internal-readers" in out
 
+    def test_arg_taint_rule_rejection_is_traced(self, tmp_path: Path) -> None:
+        # A synthetic explain call carries no value ledger, so every
+        # argument's value label is empty — the per-value rule must show a
+        # readable arg_taint rejection instead of silently matching.
+        yaml_text = (
+            "version: 1\n"
+            "name: value-pol\n"
+            "rules:\n"
+            "  - id: deny-tainted-body\n"
+            "    when:\n"
+            "      tool: send_email\n"
+            "      arg_taint:\n"
+            "        body: { any_of: [web] }\n"
+            "    effect: { action: deny }\n"
+        )
+        f = _write(tmp_path, "value.yaml", yaml_text)
+        rc, out, err = _run(
+            ["policy", "explain", str(f), "--tool", "send_email", "--taint", "web"]
+        )
+        assert rc == 0
+        assert "no rule matched" in out
+        assert "fails the arg_taint condition" in out
+
     def test_explain_missing_file_exits_2(self, tmp_path: Path) -> None:
         rc, out, err = _run(
             ["policy", "explain", str(tmp_path / "nope.yaml"), "--tool", "x"]
@@ -753,6 +776,46 @@ class TestLint:
         rc, out, err = _run(["policy", "lint", str(f)])
         assert rc == 3
         assert "'allow-send-email' is shadowed by earlier rule 'deny-all-sends'" in out
+
+    def test_arg_taint_contradiction_is_w002(self, tmp_path: Path) -> None:
+        yaml_text = (
+            "version: 1\n"
+            "name: value-pol\n"
+            "rules:\n"
+            "  - id: impossible-value-rule\n"
+            "    when:\n"
+            "      tool: send_email\n"
+            "      arg_taint:\n"
+            "        body: { all_of: [web], none_of: [web] }\n"
+            "    effect: { action: deny }\n"
+        )
+        f = _write(tmp_path, "value.yaml", yaml_text)
+        rc, out, err = _run(["policy", "lint", str(f)])
+        assert rc == 3
+        assert "W002" in out
+        assert "arg_taint['body']" in out
+
+    def test_arg_taint_rule_never_claims_generality(self, tmp_path: Path) -> None:
+        # An earlier per-value rule must not be reported as shadowing a
+        # later unconstrained rule — the value label is a runtime observable
+        # the linter cannot prove anything about.
+        yaml_text = (
+            "version: 1\n"
+            "name: value-pol\n"
+            "rules:\n"
+            "  - id: deny-tainted-body\n"
+            "    when:\n"
+            "      tool: send_email\n"
+            "      arg_taint:\n"
+            "        body: { any_of: [web] }\n"
+            "    effect: { action: deny }\n"
+            "  - id: allow-send-email\n"
+            "    when: { tool: send_email }\n"
+            "    effect: { action: allow }\n"
+        )
+        f = _write(tmp_path, "value.yaml", yaml_text)
+        rc, out, err = _run(["policy", "lint", str(f)])
+        assert rc == 0
 
     def test_narrower_identity_earlier_does_not_shadow(self, tmp_path: Path) -> None:
         # CLEAN_LINT_YAML's allow-research-publish (identity-constrained) must

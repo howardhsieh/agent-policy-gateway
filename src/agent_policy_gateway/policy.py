@@ -16,6 +16,12 @@ A *policy file* is a YAML document with a small, fixed schema::
             channel: "#public"       # str / int / bool, compared by equality
           arg_matches:               # optional regex argument matching (R54)
             recipient: "^UK\\d+$"    # re.search over string values only
+        arg_taint:                 # optional per-argument value labels (R57)
+          payload:                 #   condition on the label of the value
+            integrity:             #   flowing into this argument (same
+              any_of: [web]        #   schema as `taint:`; an argument with
+                                   #   no recorded value label is the empty
+                                   #   label)
           taint:                     # optional condition on input taint
             any_of: [web]            # at least one of these sources present
             all_of: []               # all of these sources present
@@ -409,6 +415,17 @@ class Selector(BaseModel):
     pattern therefore reads "any string". Like ``arg_equals``, an empty
     mapping does not constrain the match, and both may constrain the
     same argument (the call must satisfy each independently).
+
+    ``arg_taint`` (R57) conditions on the *per-value* labels a
+    value-tracking runtime attaches as ``ToolCall.arg_labels``: each
+    named argument's :class:`TaintCondition` is evaluated against the
+    label of the value flowing into that argument. An argument with no
+    recorded value label — including an argument absent from the call,
+    or any call from a value-blind runtime — is evaluated as the
+    *empty* label, so an ``any_of`` deny rule never fires on clean or
+    unlabeled values while a ``none_of`` requirement is satisfied by
+    them. Unlike ``taint:``, which reads the session-level input label,
+    ``arg_taint`` sees only what actually flows into the argument.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -418,6 +435,7 @@ class Selector(BaseModel):
     resource: str | None = None
     arg_equals: dict[str, StrictStr | StrictInt | StrictBool] | None = None
     arg_matches: dict[str, StrictStr] | None = None
+    arg_taint: dict[str, TaintCondition] | None = None
     taint: TaintCondition | None = None
     chain: ChainCondition | None = None
 
@@ -446,6 +464,15 @@ class Selector(BaseModel):
                 raise ValueError(
                     f"arg_matches[{key!r}] is not a valid regex: {e}"
                 ) from e
+        return v
+
+    @field_validator("arg_taint")
+    @classmethod
+    def _arg_taint_keys_nonempty(
+        cls, v: dict[str, TaintCondition] | None
+    ) -> dict[str, TaintCondition] | None:
+        if v is not None and any(not k.strip() for k in v):
+            raise ValueError("arg_taint keys must be non-empty argument names")
         return v
 
     def matches(
@@ -490,6 +517,11 @@ class Selector(BaseModel):
                     return False
                 value = call.args[key]
                 if not isinstance(value, str) or re.search(pattern, value) is None:
+                    return False
+        if self.arg_taint:
+            for key, condition in self.arg_taint.items():
+                label = call.arg_labels.get(key, TaintLabel())
+                if not condition.matches(label):
                     return False
         if self.taint is not None and not self.taint.matches(call.input_label):
             return False

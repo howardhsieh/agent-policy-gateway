@@ -178,6 +178,7 @@ from agent_policy_gateway.taint import (
     propagate_provenance,
     subsumes,
 )
+from agent_policy_gateway.value_flow import ValueLedger
 
 __version__ = "0.0.1"
 
@@ -241,6 +242,7 @@ __all__ = [
     "ToolTaintSpec",
     "Turn",
     "TurnOutcome",
+    "ValueLedger",
     "Verdict",
     "WatchedPolicy",
     "CMP_ARMS",

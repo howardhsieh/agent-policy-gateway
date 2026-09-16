@@ -35,20 +35,6 @@ dependency order; R62 pairs APG (prevention) with the sibling TraceSig
 project (detection). Cadence unchanged (2026-08-25 rules): one item per day,
 work the FIRST unchecked item top-down._
 
-- [ ] **R57. Per-value taint labels.** Attach labels to values (tool-call
-  outputs and the argument strings derived from them), not just the session
-  input, so a sink decision can see the label of the value actually flowing
-  into each argument — carrying **both R51 dimensions** (integrity and
-  confidentiality) per value. Acceptance: a value-flow API the runtime
-  threads through tool results → subsequent arguments (exact-match
-  propagation is enough for the PoC); a policy sub-condition matching
-  per-argument value labels; re-run the R56 comparison family with a
-  `value-taint` arm and publish (a) whether it separates covert-launder
-  compromise from benign-launder utility and closes the chain arms'
-  exfiltration residual (R56 finding 3), and (b) whether it passes the
-  benign `secret` flow while holding `exfil` at 0% — dissolving the fides
-  one-for-one trade (R56 finding 4); tests + docs/benchmarks update.
-
 - [ ] **R58. README / portfolio upgrade.** Rewrite the README as the
   project's front page for recruiters and researchers: a one-paragraph
   pitch that names the headline research result (the R56 Pareto frontier),
@@ -108,6 +94,26 @@ work the FIRST unchecked item top-down._
 ---
 
 ## Done
+
+- [x] **R57. Per-value taint labels.** _2026-09-16_ — labels now attach
+  to values, both R51 dimensions per value. New `value_flow.ValueLedger`
+  (exact-match value → label; join on re-record; empty labels and
+  unhashable values never recorded), `ToolCall.arg_labels`,
+  `Selector.arg_taint` per-argument sub-condition (explain trace + lint
+  aware), and opt-in `wrap_agentdojo_runtime(..., track_values=True)`
+  threading tool results → subsequent arguments with
+  `propagate(argument-value labels, spec)` at value scope. The R56
+  family gained the payload observable (distinct runtime values; every
+  sink call carries a `payload`) and a seventh arm **apg-value-taint**
+  (`policies/comparison-value-taint.yaml`), with the six R56 matrices
+  pinned unchanged. Acceptance met, measured in
+  `docs/benchmarks/comparison.md`: (a) covert-launder compromise 0% vs
+  benign-launder utility 100% — the finding-3 equivalence breaks — and
+  the chain arms' exfil residual closes; (b) benign `secret` passes at
+  100% with `exfil` held at 0% — the finding-4 fides one-for-one trade
+  dissolves. Boundary stated as finding 6: exact-match propagation only
+  sees mediated derivations (paraphrase re-opens the residual → R59).
+  Tests 1455 → 1493.
 
 - [x] **R56. APG / Progent / Fides comparison measurement.** _2026-09-01_
   — new `comparison_benchmark` replays one shared long-horizon family
