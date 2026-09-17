@@ -35,16 +35,6 @@ dependency order; R62 pairs APG (prevention) with the sibling TraceSig
 project (detection). Cadence unchanged (2026-08-25 rules): one item per day,
 work the FIRST unchecked item top-down._
 
-- [ ] **R58. README / portfolio upgrade.** Rewrite the README as the
-  project's front page for recruiters and researchers: a one-paragraph
-  pitch that names the headline research result (the R56 Pareto frontier),
-  an architecture diagram (Mermaid), a copy-paste 60-second demo with
-  expected output, badges (license, Python version, CI if configured), the
-  R56 results table, and prominent links to `docs/threat-model.md`,
-  `docs/benchmarks/`, and this roadmap. Acceptance: README renders
-  correctly on GitHub; `mkdocs build --strict` stays green; docs-only — no
-  behavioral code changes, test count unchanged.
-
 - [ ] **R59. Model-in-the-loop long-horizon eval.** Run a real LLM agent
   (any provider behind a thin driver interface, with a recorded/replay mode
   so CI stays deterministic and key-free) through the R55 stateful harness
@@ -94,6 +84,21 @@ work the FIRST unchecked item top-down._
 ---
 
 ## Done
+
+- [x] **R58. README / portfolio upgrade.** _2026-09-17_ — the README is
+  now the project's front page: a pitch paragraph naming the headline
+  R56/R57 result (the measured Pareto frontier; the `apg-value-taint`
+  arm at 100% utility / 0% compromise), the seven-arm summary table
+  with numbers verbatim from `docs/benchmarks/comparison.md`, a Mermaid
+  architecture diagram of the reference monitor (policy engine,
+  dual-label session + per-value taint, call history, audit log,
+  adapters), a copy-paste 60-second demo
+  (`python -m examples.indirect_injection`) with its exact two-line
+  expected output plus the one-command headline-table reproduction,
+  license/Python/Semgrep badges, and prominent links to
+  `docs/threat-model.md`, `docs/benchmarks/`, and this roadmap.
+  Docs-only; `mkdocs build --strict` green; tests unchanged
+  (1493 passed, 2 skipped).
 
 - [x] **R57. Per-value taint labels.** _2026-09-16_ — labels now attach
   to values, both R51 dimensions per value. New `value_flow.ValueLedger`
