@@ -35,15 +35,6 @@ dependency order; R62 pairs APG (prevention) with the sibling TraceSig
 project (detection). Cadence unchanged (2026-08-25 rules): one item per day,
 work the FIRST unchecked item top-down._
 
-- [ ] **R59. Model-in-the-loop long-horizon eval.** Run a real LLM agent
-  (any provider behind a thin driver interface, with a recorded/replay mode
-  so CI stays deterministic and key-free) through the R55 stateful harness
-  on AgentDojo-composed scenarios via `scenario_from_suite`. Acceptance:
-  driver interface + replay fixtures committed; utility/ASR for no-defense
-  vs one APG arm on a small task slice; per-arm token and wall-clock cost
-  captured in the report; write-up of how policy pressure changes agent
-  behavior (refusal handling, retries) in `docs/benchmarks/`.
-
 - [ ] **R60. Gateway overhead micro-benchmark.** Measure what mediation
   costs: per-call gateway overhead (policy evaluation, taint bookkeeping,
   history tracking) in microseconds, and its scaling against rule count,
@@ -84,6 +75,29 @@ work the FIRST unchecked item top-down._
 ---
 
 ## Done
+
+- [x] **R59. Model-in-the-loop long-horizon eval.** _2026-09-18_ — a
+  driver, not a script, now decides the calls. `model_driver` (the
+  one-method `ModelDriver` protocol, live `AnthropicDriver`,
+  digest-verified `RecordingDriver`/`ReplayDriver` JSONL fixtures —
+  CI replays identical sessions key- and network-free, drift raises
+  `ReplayMismatch`), `model_loop` (R55-shaped persistent session with
+  env-judged per-turn utility + scenario security, refusals fed to the
+  driver verbatim, behavioral observables: steps, refusals, verbatim
+  retries, tokens with an `estimated` flag, wall-clock), and
+  `model_benchmark` (three persistent banking scenarios, no-defense vs
+  `policies/agentdojo.yaml`, refusal reactions `retry`/`skip`/`abort`,
+  fixtures committed under `examples/model_loop/fixtures/`). Measured
+  (`docs/benchmarks/model-loop.md`, pinned): ASR 100%→0% under every
+  reaction; utility 100%→20%, the cost concentrated on sink turns;
+  retry is pure spend (3× refusals, ~2.6× tokens, same outcomes);
+  abort loses even the un-blocked query turn. **Caveat, recorded
+  honestly:** this runner has no LLM API key, so the committed fixtures
+  come from the deterministic `SimulatedAgentDriver` (labeled as such
+  everywhere, token counts flagged as estimates); one command
+  (`--mode record --provider anthropic`) swaps in a real model through
+  the identical plumbing once a keyed environment runs it. Tests
+  1493 → 1528.
 
 - [x] **R58. README / portfolio upgrade.** _2026-09-17_ — the README is
   now the project's front page: a pitch paragraph naming the headline

@@ -108,6 +108,30 @@ from agent_policy_gateway.gateway import (
 from agent_policy_gateway.langchain_adapter import wrap_langchain_tools
 from agent_policy_gateway.mcp_adapter import wrap_mcp_session
 from agent_policy_gateway.mcp_async_adapter import wrap_mcp_session_async
+from agent_policy_gateway.model_driver import (
+    AnthropicDriver,
+    ModelDriver,
+    ModelStep,
+    RecordingDriver,
+    ReplayDriver,
+    ReplayMismatch,
+    ToolInvocation,
+    ToolSchema,
+    Usage,
+    request_digest,
+)
+from agent_policy_gateway.model_loop import (
+    ModelArmStats,
+    ModelScenario,
+    ModelScenarioReport,
+    ModelTask,
+    ModelTurnReport,
+    aggregate_model_scenarios,
+    read_model_scenarios,
+    run_model_scenario,
+    schemas_from_runtime,
+    write_model_scenarios,
+)
 from agent_policy_gateway.openai_adapter import (
     OpenAITool,
     OpenAIToolCallError,
@@ -180,7 +204,7 @@ from agent_policy_gateway.taint import (
 )
 from agent_policy_gateway.value_flow import ValueLedger
 
-__version__ = "0.0.1"
+__version__ = "0.1.0"
 
 __all__ = [
     "AGENT_ID_KWARG",
@@ -221,6 +245,20 @@ __all__ = [
     "ProvenanceCondition",
     "ProvenanceEntry",
     "ProvenanceMatcher",
+    "AnthropicDriver",
+    "ModelArmStats",
+    "ModelDriver",
+    "ModelScenario",
+    "ModelScenarioReport",
+    "ModelStep",
+    "ModelTask",
+    "ModelTurnReport",
+    "RecordingDriver",
+    "ReplayDriver",
+    "ReplayMismatch",
+    "ToolInvocation",
+    "ToolSchema",
+    "Usage",
     "AGENTDOJO_SUITES",
     "AGENTDOJO_SUITE_VERSION",
     "AGENTDOJO_UNTRUSTED",
@@ -253,7 +291,13 @@ __all__ = [
     "DEMO_UNTRUSTED",
     "__version__",
     "aggregate_episodes",
+    "aggregate_model_scenarios",
     "aggregate_scenarios",
+    "read_model_scenarios",
+    "request_digest",
+    "run_model_scenario",
+    "schemas_from_runtime",
+    "write_model_scenarios",
     "comparison_scenarios",
     "demo_scenarios",
     "read_scenarios",

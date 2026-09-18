@@ -1009,3 +1009,49 @@ pieces plus a benchmark arm:
   governance is also deliberately session-scoped for now: declassify
   grants strip the session label, while value labels propagate by spec
   only — a per-value declassify is future work, not smuggled in.
+
+## Model-in-the-loop long-horizon eval (R59)
+
+R55–R57 replay *scripts*, which pin the policy's behavior but not the
+agent's: they cannot say what an agent does when the gateway starts
+refusing its calls, or what that reaction costs. R59 puts a driver in
+the loop and keeps everything else fixed.
+
+- **The driver seam is one method.** `model_driver.ModelDriver` —
+  `next_step(messages, tools) -> ModelStep` over provider-neutral
+  message dicts and `ToolSchema`s, returning tool calls (or a final
+  text) plus `Usage` with an explicit `estimated` flag. `AnthropicDriver`
+  is the live implementation (lazy import, translation at the edge,
+  provider-measured usage); tests and the benchmark run on stand-ins.
+- **Record/replay makes model runs a fixture.** `RecordingDriver`
+  persists every (request, step) pair as JSONL keyed by a SHA-256
+  digest of the canonical request; `ReplayDriver` plays the file back
+  in order, verifying each digest — so CI re-runs the identical session
+  key-free, and any drift in prompts, tool schemas, or harness plumbing
+  raises `ReplayMismatch` instead of quietly reporting stale numbers.
+- **The runner keeps the R55 session shape.** `model_loop
+  .run_model_scenario`: one conversation, one runtime, taint/history
+  reset once at the start, per-turn taint snapshots. The scripted
+  `user`/`attack` call labels disappear — the model decides the calls —
+  so outcomes move to the environment: per-turn utility and
+  scenario-level security are injected callables over deep-copied env
+  snapshots (AgentDojo's own checks in the benchmark). Refusals reach
+  the driver verbatim as the R49a `PolicyDenied:` tool errors, and the
+  report adds the behavioral observables: driver steps, truncation,
+  refusals, verbatim retries (`retried_refusals`, an upper bound by
+  construction), tokens, wall-clock.
+- **The benchmark is honest about its agent.** `model_benchmark` runs a
+  banking slice (three persistent sessions, every one reading an
+  injection vector) under no-defense vs `policies/agentdojo.yaml`, with
+  `SimulatedAgentDriver` — deterministic, LLM-free, maximally
+  hijackable (adopts the injection on first marker sighting), reacting
+  to refusals by strategy (`retry`/`skip`/`abort`) — driving the
+  committed fixtures. Headline (`docs/benchmarks/model-loop.md`, all
+  numbers pinned): ASR 100% → 0% under every reaction; utility 100% →
+  20% (the cost concentrates on sink turns; the query turn survives);
+  retry is pure spend (3× refusals, ~2.6× tokens, identical outcomes);
+  abort is over-compliance — it loses even the turn the policy never
+  blocked, because the apology replaces the answer. Recording a real
+  model replaces the fixtures through the same plumbing
+  (`--mode record --provider anthropic`); this environment has no API
+  key, so that recording is deliberately left to a keyed run.
