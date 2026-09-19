@@ -35,14 +35,6 @@ dependency order; R62 pairs APG (prevention) with the sibling TraceSig
 project (detection). Cadence unchanged (2026-08-25 rules): one item per day,
 work the FIRST unchecked item top-down._
 
-- [ ] **R60. Gateway overhead micro-benchmark.** Measure what mediation
-  costs: per-call gateway overhead (policy evaluation, taint bookkeeping,
-  history tracking) in microseconds, and its scaling against rule count,
-  history length, and taint-set size, on seeded synthetic workloads.
-  Acceptance: an `overhead_benchmark` module + `docs/benchmarks/overhead.md`
-  with pinned methodology; tests assert only generous order-of-magnitude
-  bounds so CI stays stable across machines; R61 cites the numbers.
-
 - [ ] **R61. External write-up packaging.** Turn
   `docs/benchmarks/comparison.md` + the R50/R53 AgentDojo numbers into a
   self-contained workshop-style write-up: related-work section (Progent,
@@ -75,6 +67,26 @@ work the FIRST unchecked item top-down._
 ---
 
 ## Done
+
+- [x] **R60. Gateway overhead micro-benchmark.** _2026-09-19_ — what
+  mediation costs, measured. New `overhead_benchmark` on the R12
+  `bench` timer: a **mediation ladder** (one trivial call through
+  `Gateway.execute`, one feature per rung — allow policy → taint label
+  + spec + taint rule → history + chain rule → audit dispatch, plus
+  the R57 `ValueLedger` round-trip) and three **scaling sweeps** over
+  pure `Gateway.decide` on seeded synthetic worst cases (only the last
+  of *N* rules matches; a `no_prior` matcher forcing the full O(H)
+  history walk; *S*-source labels joined and inspected). Measured
+  (`docs/benchmarks/overhead.md`, pinned methodology + numbers): full
+  mediation **~12 µs/call** (~80k calls/s/core), dominated by the fixed
+  decide path with each feature riding at ≲1–2 µs; **linear** in
+  scanned rules (~0.46 µs/rule) and history entries (~0.48 µs/entry),
+  **near-flat** in taint sources (~0.05 µs/source); under ~25 µs at
+  every size R55/R56/R59 actually use. Tests pin workload structure
+  exactly but latency only at generous order-of-magnitude ceilings, so
+  CI stays stable across machines. Also: mypy override for the
+  optional `anthropic` SDK (the R59 lazy import made the typed-API
+  guard depend on the SDK being installed). Tests 1528 → 1559.
 
 - [x] **R59. Model-in-the-loop long-horizon eval.** _2026-09-18_ — a
   driver, not a script, now decides the calls. `model_driver` (the

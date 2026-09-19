@@ -140,6 +140,13 @@ from agent_policy_gateway.openai_adapter import (
     openai_tool_specs,
     wrap_openai_tools,
 )
+from agent_policy_gateway.overhead_benchmark import (
+    OverheadReport,
+    SweepPoint,
+    run_ladder,
+    run_overhead_suite,
+    run_sweep,
+)
 from agent_policy_gateway.policy import (
     DIMENSIONS,
     Action,
@@ -233,6 +240,7 @@ __all__ = [
     "JsonlAuditWriter",
     "OpenAITool",
     "OpenAIToolCallError",
+    "OverheadReport",
     "Policy",
     "PolicyDenied",
     "PolicyError",
@@ -274,6 +282,7 @@ __all__ = [
     "ScenarioReport",
     "ScenarioStats",
     "Selector",
+    "SweepPoint",
     "TaintCondition",
     "TaintLabel",
     "ToolCall",
@@ -303,7 +312,10 @@ __all__ = [
     "read_scenarios",
     "run_comparison",
     "run_demo",
+    "run_ladder",
+    "run_overhead_suite",
     "run_scenario",
+    "run_sweep",
     "scenario_from_suite",
     "write_scenarios",
     "anthropic_tool_specs",

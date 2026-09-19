@@ -62,6 +62,7 @@ nav:
       - Long-horizon: benchmarks/stateful.md
       - Comparison: benchmarks/comparison.md
       - Model-in-the-loop: benchmarks/model-loop.md
+      - Overhead: benchmarks/overhead.md
   - Daily runbook: daily-runbook.md
   - Release: release.md
 

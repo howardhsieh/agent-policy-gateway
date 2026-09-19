@@ -75,6 +75,13 @@ files = ["src/agent_policy_gateway"]
 module = "yaml"
 ignore_missing_imports = true
 
+# The Anthropic SDK is a lazy, optional runtime dependency of
+# AnthropicDriver (R59) — never installed by any extra here, so the
+# typed-API guard must stay green on machines without it.
+[[tool.mypy.overrides]]
+module = "anthropic"
+ignore_missing_imports = true
+
 # The AgentDojo benchmark ships no py.typed marker; the lazy import in
 # agentdojo_suite.gate_suite must not fail the typed-API guard.
 [[tool.mypy.overrides]]
