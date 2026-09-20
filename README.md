@@ -115,7 +115,11 @@ review of high-stakes actions — it makes that review tractable.
 
 ## Research & benchmarks
 
-The measurement track, in dependency order — all deterministic and
+The whole measurement series, packaged as a self-contained
+workshop-style draft with one reproducibility script per table:
+**[`docs/paper/`](./docs/paper/index.md)**.
+
+The individual write-ups, in dependency order — all deterministic and
 CI-reproducible, under **[`docs/benchmarks/`](./docs/benchmarks/)**:
 
 - [`agentdojo.md`](./docs/benchmarks/agentdojo.md) — attack success rate and
@@ -125,11 +129,14 @@ CI-reproducible, under **[`docs/benchmarks/`](./docs/benchmarks/)**:
   and how a mid-session declassify launders an input-taint policy.
 - [`comparison.md`](./docs/benchmarks/comparison.md) — the seven-arm
   APG / Progent / Fides comparison summarized above.
-- [`benchmarks.md`](./docs/benchmarks.md) — `apg-bench`, per-call overhead
-  and throughput on the gateway's hot paths.
+- [`model-loop.md`](./docs/benchmarks/model-loop.md) — a driver, not a
+  script, decides the calls: what policy refusals do to agent behavior,
+  utility, and token spend.
+- [`overhead.md`](./docs/benchmarks/overhead.md) — what mediation costs:
+  the per-call ladder and scaling sweeps (~12 µs full mediation).
 
-What's next (model-in-the-loop evaluation, overhead micro-benchmark, external
-write-up): **[`ROADMAP.md`](./ROADMAP.md)**.
+What's next (audit-trace export for the sibling TraceSig detection
+project): **[`ROADMAP.md`](./ROADMAP.md)**.
 
 ## Quick start (library API)
 

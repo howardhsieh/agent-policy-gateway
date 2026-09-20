@@ -1088,3 +1088,40 @@ monitor next to its coverage.
   builders build what the methodology claims) but latency only at
   generous order-of-magnitude ceilings, so the suite never flakes on a
   slow runner; the pinned numbers live in the doc, not the tests.
+
+## External write-up packaging (R61)
+
+The measurement series (R50 → R60) ends its phase as one artifact: a
+self-contained, workshop-style draft under `docs/paper/`, in the mkdocs
+nav as "Paper".
+
+- **One narrative, five tables.** The draft orders the series as an
+  argument rather than a changelog: the single-episode AgentDojo replay
+  establishes the baseline trade (T1), the persistent-session harness
+  shows why label state launders and history state holds (T2), the
+  seven-arm comparison turns that into a measured Pareto frontier and
+  the per-value arm's 100%/0% result (T3), the model-in-the-loop
+  harness measures what refusals do to agent behavior (T4), and the
+  overhead ladder prices the whole mechanism (T5). Three numbered
+  findings — launderability predicts robustness; session state
+  dominates the equivalent stateless allowlist; covert exfiltration is
+  a session-scope impossibility that value labels break — carry the
+  abstract.
+- **Citations verified, caveats carried.** All six related-work
+  references (AgentDojo, Progent, Fides, f-secure, CaMeL, IsolateGPT)
+  were checked against their arXiv records before landing in the
+  bibliography; the R59 simulated-driver provenance warning and the
+  R57 exact-match-propagation boundary appear in the draft with the
+  same prominence they have in the benchmark pages — the draft
+  oversells nothing the benchmarks hedge.
+- **Reproducibility is enforced, not promised.** Every table names its
+  regeneration command inline and has a committed script under
+  `docs/paper/repro/` (plus `all.sh` and an `environment.sh` that
+  reports the pins; `requirements.lock` freezes the exact environment).
+  `tests/test_paper.py` re-derives the deterministic tables in-process
+  (T2/T3 from the benchmarks, T4 from the replay fixtures) and compares
+  them cell-by-cell against the markdown, pins T1 against the AgentDojo
+  page and T5 against the overhead page rung-for-rung, and checks that
+  each script exists, parses, and references real modules — so a
+  benchmark change that moves a published number fails CI until the
+  draft is updated with it.
