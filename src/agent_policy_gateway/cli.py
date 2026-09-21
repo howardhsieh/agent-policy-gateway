@@ -55,6 +55,17 @@ Subcommands
     loudly (exit ``1``); the translation is never silently weaker than the
     source policy. See :mod:`agent_policy_gateway.progent_import`.
 
+``apg audit export <log.jsonl> [--format tracesig] [-o FILE]``
+    Export a JSONL audit log as a versioned TraceSig trace (R62): one flat,
+    Sigma-friendly JSON event per audit record, stamped with the frozen
+    ``apg-audit-trace`` schema and its version so the sibling TraceSig
+    project can vendor the output as detection-rule fixtures. ``-`` reads
+    the log from stdin; ``--output`` writes to a file instead of stdout.
+    Exit codes mirror ``audit stats``: ``0`` ok, ``2`` missing input file or
+    unwritable output, ``3`` malformed log line. See
+    :mod:`agent_policy_gateway.tracesig_export` and
+    ``docs/tracesig-export.md`` for the field mapping.
+
 ``apg audit diff <old.jsonl> <new.jsonl> [--json] [--top N]``
     Compare two audit logs the way ``policy diff`` compares two policies (R47),
     but by the decisions that were *recorded* rather than the decisions a
@@ -119,6 +130,7 @@ from agent_policy_gateway.progent_import import (
     load_progent_policy,
     policy_to_yaml,
 )
+from agent_policy_gateway.tracesig_export import write_tracesig
 
 
 def _parse_taint(raw: str | None) -> TaintLabel:
@@ -1237,6 +1249,44 @@ def _cmd_audit_diff(args: argparse.Namespace) -> int:
     return 0
 
 
+# --- ``apg audit export`` (R62) ------------------------------------------------
+
+
+def _cmd_audit_export(args: argparse.Namespace) -> int:
+    """Export a JSONL audit log as a TraceSig trace. Exit codes mirror
+    ``audit stats``: ``0`` ok, ``2`` missing input file (or an unwritable
+    ``--output`` path), ``3`` malformed log line."""
+    if args.log == "-":
+        records = read_audit_stdin()
+    else:
+        try:
+            records = read_audit(args.log)
+        except FileNotFoundError:
+            print(f"apg: audit log not found: {args.log}", file=sys.stderr)
+            return 2
+    # Materialize before opening the output so a malformed log never leaves a
+    # half-written export behind.
+    try:
+        materialized = list(records)
+    except AuditFormatError as exc:
+        print(f"apg: {exc}", file=sys.stderr)
+        return 3
+    if args.output is None:
+        write_tracesig(materialized, sys.stdout)
+        return 0
+    try:
+        with open(args.output, "w", encoding="utf-8") as fp:
+            count = write_tracesig(materialized, fp)
+    except OSError as exc:
+        print(
+            f"apg: cannot write export file: {args.output}: {exc.strerror or exc}",
+            file=sys.stderr,
+        )
+        return 2
+    print(f"apg: wrote {count} event(s) to {args.output}", file=sys.stderr)
+    return 0
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="apg",
@@ -1711,6 +1761,47 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     diff_log_p.set_defaults(func=_cmd_audit_diff)
+
+    export_p = audit_sub.add_parser(
+        "export",
+        help="Export a JSONL audit log as a TraceSig trace.",
+        description=(
+            "Export a JSONL audit log as a versioned TraceSig trace: one "
+            "flat, Sigma-friendly JSON event per audit record, stamped with "
+            "the frozen apg-audit-trace schema and its version (see "
+            "docs/tracesig-export.md for the field mapping). Exits 0 on "
+            "success, 2 if the input file is missing or the output path is "
+            "unwritable, 3 if a log line is malformed."
+        ),
+    )
+    export_p.add_argument(
+        "log",
+        help=(
+            "Path to the JSONL audit log file. '-' reads the log from stdin."
+        ),
+    )
+    export_p.add_argument(
+        "--format",
+        choices=["tracesig"],
+        default="tracesig",
+        help=(
+            "Output trace format. Only 'tracesig' (the default) exists "
+            "today; the flag pins the choice so future formats slot in "
+            "without changing the command shape."
+        ),
+    )
+    export_p.add_argument(
+        "--output",
+        "-o",
+        default=None,
+        metavar="FILE",
+        help=(
+            "Write the exported trace to FILE instead of stdout. A one-line "
+            "event-count confirmation goes to stderr so stdout stays clean "
+            "for piping."
+        ),
+    )
+    export_p.set_defaults(func=_cmd_audit_export)
 
     return parser
 

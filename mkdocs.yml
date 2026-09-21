@@ -64,6 +64,7 @@ nav:
       - Model-in-the-loop: benchmarks/model-loop.md
       - Overhead: benchmarks/overhead.md
   - Paper: paper/index.md
+  - TraceSig export: tracesig-export.md
   - Daily runbook: daily-runbook.md
   - Release: release.md
 

@@ -209,6 +209,16 @@ from agent_policy_gateway.taint import (
     propagate_provenance,
     subsumes,
 )
+from agent_policy_gateway.tracesig_export import (
+    TRACESIG_SCHEMA,
+    TRACESIG_SCHEMA_VERSION,
+    TraceSigFormatError,
+    event_to_record,
+    export_events,
+    read_tracesig,
+    record_to_event,
+    write_tracesig,
+)
 from agent_policy_gateway.value_flow import ValueLedger
 
 __version__ = "0.1.0"
@@ -283,8 +293,11 @@ __all__ = [
     "ScenarioStats",
     "Selector",
     "SweepPoint",
+    "TRACESIG_SCHEMA",
+    "TRACESIG_SCHEMA_VERSION",
     "TaintCondition",
     "TaintLabel",
+    "TraceSigFormatError",
     "ToolCall",
     "ToolTaintSpec",
     "Turn",
@@ -357,9 +370,14 @@ __all__ = [
     "parse_progent_policy",
     "policy_to_yaml",
     "progent_sorted",
+    "event_to_record",
+    "export_events",
     "propagate",
     "propagate_provenance",
     "read_audit",
+    "read_tracesig",
+    "record_to_event",
+    "write_tracesig",
     "read_episodes",
     "render_stats_table",
     "replay_main",

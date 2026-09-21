@@ -1125,3 +1125,48 @@ nav as "Paper".
   each script exists, parses, and references real modules — so a
   benchmark change that moves a published number fails CI until the
   draft is updated with it.
+
+## Audit-trace export for TraceSig (R62)
+
+APG is the *prevention* half of a pair whose *detection* half is the
+sibling TraceSig project (Sigma-style rules over agent tool-call
+traces). R62 freezes the interchange format between them.
+
+- **A frozen, versioned schema.** `tracesig_export.py` stamps every
+  exported event with `schema: apg-audit-trace` and an integer
+  `schema_version` (currently 1), with an explicit compatibility
+  promise: within one version, existing fields keep their name, type,
+  and meaning; new *optional* fields may appear; anything breaking
+  bumps the version. `event_to_record` hard-errors on an unknown
+  schema or version rather than guessing, which is the behavior a
+  rule pack pinning the format should inherit.
+- **Flat where Sigma matches, lossless where it counts.** One JSON
+  object per audit record, in log order: a fixed always-present key
+  set (identity, verdict/rule/reason, the six per-side label lists,
+  and derived booleans `input_untrusted` / `input_secret` / `flagged`
+  so rules need no existence guards), plus optional groups
+  (`redacted_fields`, `declassified_by`, provenance chains,
+  `arg_labels`, the R27 `prev` digest) emitted only when the record
+  carried them — a legacy log exports without invented fields. Labels
+  are exported as their *stored canonical* dimension sets, not the
+  effective unions, which is precisely what makes
+  `event_to_record(record_to_event(r, seq)) == r` exact; the derived
+  fields are recomputed views and ignored on import. The full mapping
+  table lives in `docs/tracesig-export.md`.
+- **CLI**: `apg audit export LOG [--format tracesig] [-o FILE]`, exit
+  codes matching the audit family (0/2/3); the log is parsed fully
+  before the output file is opened, so a malformed line never leaves
+  a half-written export behind. `--format` has one value today; the
+  flag exists so future formats slot in without changing the command
+  shape.
+- **Vendorable fixtures.** `examples/traces/` commits three sessions
+  generated through the real `Gateway` + `JsonlAuditWriter` with a
+  deterministic clock — a benign session (all-quiet baseline), a
+  denied injection (taint arrival, persistence, provenance, denial),
+  and a laundering chain (declassify strips the label, the R53 chain
+  rule still denies; hash-chained so every event carries `prev`) —
+  each as both the raw audit log and its TraceSig export.
+  `python -m examples.traces` regenerates all six files and asserts
+  the narrative invariants; the test suite regenerates them
+  in-process and compares byte-for-byte, so the fixtures cannot
+  drift from the code that claims to produce them.

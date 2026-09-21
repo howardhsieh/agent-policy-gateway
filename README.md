@@ -134,9 +134,12 @@ CI-reproducible, under **[`docs/benchmarks/`](./docs/benchmarks/)**:
   utility, and token spend.
 - [`overhead.md`](./docs/benchmarks/overhead.md) — what mediation costs:
   the per-call ladder and scaling sweeps (~12 µs full mediation).
+- [`tracesig-export.md`](./docs/tracesig-export.md) — the versioned
+  audit-trace export pairing APG (prevention) with the sibling TraceSig
+  detection project: `apg audit export --format tracesig`, plus vendorable
+  example traces under [`examples/traces/`](./examples/traces/).
 
-What's next (audit-trace export for the sibling TraceSig detection
-project): **[`ROADMAP.md`](./ROADMAP.md)**.
+What's next: **[`ROADMAP.md`](./ROADMAP.md)**.
 
 ## Quick start (library API)
 

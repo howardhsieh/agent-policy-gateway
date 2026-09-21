@@ -6,7 +6,7 @@ the build if any subcommand or flag documented here drifts from the code.
 
 | Script | Purpose |
 | --- | --- |
-| `apg` | Inspect and validate policies; summarize and diff audit logs. |
+| `apg` | Inspect and validate policies; summarize, diff, and export audit logs. |
 | `apg-replay` | Replay a JSONL audit log as a timeline, or verify its hash chain. |
 | `apg-bench` | Micro-benchmark the decision path. See [Benchmarks](benchmarks.md). |
 
@@ -29,7 +29,7 @@ number without parsing output.
 | `0` | Success — the command ran and found nothing that should fail a build. | every subcommand |
 | `1` | Invalid policy: the file parsed but violates the schema (message is line-located), or a Progent policy outside the importable subset. | `policy validate`, `policy explain`, `policy diff`, `policy lint`, `policy import-progent` |
 | `2` | Missing file, or an unusable flag combination (`--csv-section` without `--csv`; `-` mixed with paths). | every subcommand |
-| `3` | Findings that should fail a build: lint findings, or a malformed audit-log line. | `policy lint`, `audit stats`, `audit diff` |
+| `3` | Findings that should fail a build: lint findings, or a malformed audit-log line. | `policy lint`, `audit stats`, `audit diff`, `audit export` |
 | `4` | Broken audit hash chain. Not emitted by `apg`; reserved here because it is shared with `apg-replay --verify`. | `apg-replay --verify` |
 | `5` | CI gate tripped: the deny+review share is **over** `--fail-over`. | `audit stats` |
 | `6` | CI gate tripped: the allow share is **under** `--fail-under`. | `audit stats` |
@@ -178,7 +178,8 @@ unwritable.
 
 ## `apg audit`
 
-Inspect JSONL audit logs: summarize one (`stats`) or compare two (`diff`).
+Inspect JSONL audit logs: summarize one (`stats`), compare two (`diff`), or export
+one as a TraceSig trace (`export`).
 
 ### `apg audit stats`
 
@@ -290,6 +291,33 @@ The report has three parts:
 
 Finding changes is the expected outcome, so the command exits `0` whether or not
 anything moved. Exits `2` if either log is missing, `3` if a log line is malformed.
+
+### `apg audit export`
+
+Export an audit log as a versioned **TraceSig** trace: one flat, Sigma-friendly JSON
+event per audit record, stamped with the frozen `apg-audit-trace` schema and its
+version. TraceSig — the sibling detection project (Sigma-style rules over agent
+tool-call traces) — vendors these traces as rule fixtures; the full field mapping and
+the schema's compatibility promise live in [TraceSig export](tracesig-export.md).
+
+```console
+$ apg audit export audit.jsonl
+$ apg audit export audit.jsonl --format tracesig -o trace.jsonl
+$ cat audit.jsonl | apg audit export -
+```
+
+| Argument | Description |
+| --- | --- |
+| `log` (positional) | Path to the JSONL audit log file. `-` reads the log from stdin. |
+
+| Flag | Argument | Default | Description |
+| --- | --- | --- | --- |
+| `--format` | `tracesig` | `tracesig` | Output trace format. Only `tracesig` exists today; the flag pins the choice so future formats slot in without changing the command shape. |
+| `--output` / `-o` | `FILE` | stdout | Write the exported trace to FILE instead of stdout. A one-line event-count confirmation goes to stderr so stdout stays clean for piping. |
+
+Exits `0` on success, `2` if the input file is missing or the output path is
+unwritable, `3` if a log line is malformed (nothing is written in that case — the log
+is parsed fully before the output file is opened).
 
 ---
 
