@@ -70,6 +70,11 @@ The workflow will also have a `workflow_dispatch` trigger so it can
 be run manually from the Actions tab — useful for re-running a
 release after a transient failure.
 
+The GitHub release entry (tag `v<version>` plus notes from
+`CHANGELOG.md`) comes from `.github/workflows/github-release.yml`, which
+runs when the version in `pyproject.toml` changes on `main` or by hand.
+It never uploads to PyPI; `publish.yml` stays the only publishing path.
+
 ## 3. Manual fallback
 
 If GitHub Actions is unavailable, or while R14b is still pending,
