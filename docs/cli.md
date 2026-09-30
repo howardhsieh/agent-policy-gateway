@@ -296,13 +296,15 @@ anything moved. Exits `2` if either log is missing, `3` if a log line is malform
 
 Export an audit log as a versioned **TraceSig** trace: one flat, Sigma-friendly JSON
 event per audit record, stamped with the frozen `apg-audit-trace` schema and its
-version. TraceSig — the sibling detection project (Sigma-style rules over agent
-tool-call traces) — vendors these traces as rule fixtures; the full field mapping and
-the schema's compatibility promise live in [TraceSig export](tracesig-export.md).
+version. [TraceSig](https://github.com/howardhsieh/tracesig) — the sibling detection
+project (Sigma-style rules over agent tool-call traces) — scans these traces directly
+(`tracesig scan trace.jsonl`); the full field mapping and the schema's compatibility
+promise live in [TraceSig export](tracesig-export.md).
 
 ```console
 $ apg audit export audit.jsonl
 $ apg audit export audit.jsonl --format tracesig -o trace.jsonl
+$ apg audit export audit.jsonl --session-id run-42 -o trace.jsonl
 $ cat audit.jsonl | apg audit export -
 ```
 
@@ -314,6 +316,7 @@ $ cat audit.jsonl | apg audit export -
 | --- | --- | --- | --- |
 | `--format` | `tracesig` | `tracesig` | Output trace format. Only `tracesig` exists today; the flag pins the choice so future formats slot in without changing the command shape. |
 | `--output` / `-o` | `FILE` | stdout | Write the exported trace to FILE instead of stdout. A one-line event-count confirmation goes to stderr so stdout stays clean for piping. |
+| `--session-id` | `ID` | log file name | Session name stamped on every event as `session_id` (TraceSig groups its rules per session). Defaults to the log file's name without extension, or `stdin` when reading from `-`. |
 
 Exits `0` on success, `2` if the input file is missing or the output path is
 unwritable, `3` if a log line is malformed (nothing is written in that case — the log

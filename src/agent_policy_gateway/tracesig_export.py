@@ -40,9 +40,15 @@ in ``docs/tracesig-export.md``):
   label triples, R57), and ``prev`` (the R27 hash-chain digest). Their
   absence means the audit record did not carry them, so a legacy log
   exports without invented fields.
-* **Derived** — the three booleans above are computed *from* the label
-  fields for rule-authoring convenience and are ignored (recomputed,
-  never trusted) when an event is turned back into a record.
+* **Derived** — the three booleans above, plus the TraceSig consumption
+  fields ``session_id`` (the caller-supplied session name, else the
+  agent id, else ``"default"``) and ``labels`` (the names in the call's
+  *output* label, plus ``untrusted`` when that output carries any
+  integrity taint), are computed for rule-authoring convenience and are
+  ignored (recomputed, never trusted) when an event is turned back into
+  a record. ``session_id`` and ``labels`` make an export directly
+  scannable by TraceSig's trace schema (``tracesig scan trace.jsonl``);
+  they were added within schema version 1 as an additive change.
 
 The mapping is **lossless**: :func:`event_to_record` inverts
 :func:`record_to_event` exactly, which the round-trip test pins. Labels
@@ -74,9 +80,11 @@ from agent_policy_gateway.core import (
 )
 
 __all__ = [
+    "DEFAULT_SESSION_ID",
     "TRACESIG_SCHEMA",
     "TRACESIG_SCHEMA_VERSION",
     "TraceSigFormatError",
+    "UNTRUSTED_LABEL",
     "event_to_record",
     "export_events",
     "read_tracesig",
@@ -107,6 +115,29 @@ def _label_lists(label: TaintLabel) -> tuple[list[str], list[str], list[str]]:
     )
 
 
+#: Marker added to ``labels`` when a call's output carries integrity taint,
+#: matching the label vocabulary of TraceSig's rule packs.
+UNTRUSTED_LABEL = "untrusted"
+
+#: ``session_id`` used when neither the caller nor the record names one.
+DEFAULT_SESSION_ID = "default"
+
+
+def _trace_labels(label: TaintLabel) -> list[str]:
+    """TraceSig ``labels`` for a call: what its *output* carries.
+
+    The union of the output label's stored dimension sets, plus
+    :data:`UNTRUSTED_LABEL` when the effective integrity set is non-empty
+    (a legacy source counts in both dimensions). Output labels are what
+    TraceSig taint rules need: the call that brought web content in is the
+    source, a later sink is the finding.
+    """
+    names = set(label.sources) | set(label.confidentiality) | set(label.integrity)
+    if label.integrity_sources:
+        names.add(UNTRUSTED_LABEL)
+    return sorted(names)
+
+
 def _provenance_list(prov: Provenance) -> list[dict[str, Any]]:
     """Provenance entries as ``{source, tool, call_id}`` dicts, chain order."""
     return [
@@ -115,13 +146,18 @@ def _provenance_list(prov: Provenance) -> list[dict[str, Any]]:
     ]
 
 
-def record_to_event(record: AuditRecord, seq: int) -> dict[str, Any]:
+def record_to_event(
+    record: AuditRecord, seq: int, *, session_id: str | None = None
+) -> dict[str, Any]:
     """Map one :class:`AuditRecord` to one TraceSig event dict.
 
     ``seq`` is the record's 0-based position in the exported log; TraceSig
     rules use it to order events within a trace file independent of
-    timestamp ties. The returned dict is JSON-serializable as-is and
-    inverts exactly through :func:`event_to_record`.
+    timestamp ties. ``session_id`` names the session the event belongs to
+    (TraceSig groups rules per session); when omitted it falls back to the
+    call's agent id, then :data:`DEFAULT_SESSION_ID`. The returned dict is
+    JSON-serializable as-is and inverts exactly through
+    :func:`event_to_record`.
     """
     call = record.call
     dec = record.decision
@@ -149,6 +185,13 @@ def record_to_event(record: AuditRecord, seq: int) -> dict[str, Any]:
         "input_untrusted": bool(call.input_label.integrity_sources),
         "input_secret": bool(call.input_label.confidentiality_sources),
         "flagged": dec.verdict in (Verdict.DENY, Verdict.REVIEW),
+        # Derived TraceSig consumption fields (trace schema: session_id, labels).
+        "session_id": (
+            session_id
+            if session_id is not None
+            else (call.agent_id or DEFAULT_SESSION_ID)
+        ),
+        "labels": _trace_labels(dec.output_label),
     }
     # Optional groups: emitted only when the audit record carried them, so a
     # legacy log exports without invented fields (mirroring the audit
@@ -214,7 +257,8 @@ def event_to_record(event: dict[str, Any]) -> AuditRecord:
     :data:`TRACESIG_SCHEMA_VERSION` stamp are accepted; anything else
     raises :class:`TraceSigFormatError` rather than guessing. The derived
     fields (``input_untrusted`` / ``input_secret`` / ``flagged`` /
-    ``seq``) are ignored — they are recomputed views, not state.
+    ``seq`` / ``session_id`` / ``labels``) are ignored — they are
+    recomputed views, not state.
     """
     schema = event.get("schema")
     if schema != TRACESIG_SCHEMA:
@@ -275,21 +319,31 @@ def event_to_record(event: dict[str, Any]) -> AuditRecord:
     )
 
 
-def export_events(records: Iterable[AuditRecord]) -> Iterator[dict[str, Any]]:
-    """Yield one TraceSig event per audit record, in order, ``seq`` counted."""
+def export_events(
+    records: Iterable[AuditRecord], *, session_id: str | None = None
+) -> Iterator[dict[str, Any]]:
+    """Yield one TraceSig event per audit record, in order, ``seq`` counted.
+
+    ``session_id`` is stamped on every event (see :func:`record_to_event`).
+    """
     for seq, record in enumerate(records):
-        yield record_to_event(record, seq)
+        yield record_to_event(record, seq, session_id=session_id)
 
 
-def write_tracesig(records: Iterable[AuditRecord], fp: IO[str]) -> int:
+def write_tracesig(
+    records: Iterable[AuditRecord],
+    fp: IO[str],
+    *,
+    session_id: str | None = None,
+) -> int:
     """Write ``records`` to ``fp`` as TraceSig JSONL; return the event count.
 
     One event per line, keys sorted, no trailing spaces — the same stable
     serialization the audit writer uses, so committed fixtures diff
-    cleanly.
+    cleanly. ``session_id`` is stamped on every event.
     """
     count = 0
-    for event in export_events(records):
+    for event in export_events(records, session_id=session_id):
         fp.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
         count += 1
     return count

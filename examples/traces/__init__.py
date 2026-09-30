@@ -245,7 +245,7 @@ def generate_traces(out_dir: Path | None = None) -> dict[str, tuple[Path, Path]]
         audit_path = _BUILDERS[name](target)
         tracesig_path = target / f"{name}.tracesig.jsonl"
         with open(tracesig_path, "w", encoding="utf-8") as fp:
-            write_tracesig(read_audit(audit_path), fp)
+            write_tracesig(read_audit(audit_path), fp, session_id=name)
         out[name] = (audit_path, tracesig_path)
     return out
 

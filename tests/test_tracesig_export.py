@@ -29,8 +29,10 @@ from agent_policy_gateway.core import (
     Verdict,
 )
 from agent_policy_gateway.tracesig_export import (
+    DEFAULT_SESSION_ID,
     TRACESIG_SCHEMA,
     TRACESIG_SCHEMA_VERSION,
+    UNTRUSTED_LABEL,
     TraceSigFormatError,
     event_to_record,
     export_events,
@@ -150,6 +152,8 @@ ALWAYS_PRESENT = {
     "input_untrusted",
     "input_secret",
     "flagged",
+    "session_id",
+    "labels",
 }
 
 #: Keys that appear only when the audit record carried them.
@@ -200,6 +204,35 @@ class TestEventShape:
         clean = record_to_event(_minimal_record(), 0)
         assert clean["input_untrusted"] is False
         assert clean["input_secret"] is False
+
+    def test_session_id_defaults_to_agent_then_default(self) -> None:
+        rich = _rich_record()
+        assert record_to_event(rich, 0)["session_id"] == (
+            rich.call.agent_id or DEFAULT_SESSION_ID
+        )
+        assert record_to_event(rich, 0, session_id="run-7")["session_id"] == "run-7"
+        minimal = _minimal_record()
+        expected = minimal.call.agent_id or DEFAULT_SESSION_ID
+        assert record_to_event(minimal, 0)["session_id"] == expected
+
+    def test_labels_are_the_output_label_plus_untrusted_marker(self) -> None:
+        rich = record_to_event(_rich_record(), 0)
+        out = set(rich["output_sources"]) | set(rich["output_confidentiality"]) | set(
+            rich["output_integrity"]
+        )
+        assert set(rich["labels"]) - {UNTRUSTED_LABEL} == out
+        assert rich["labels"] == sorted(rich["labels"])
+        assert (UNTRUSTED_LABEL in rich["labels"]) == bool(
+            rich["output_sources"] or rich["output_integrity"]
+        )
+        assert record_to_event(_minimal_record(), 0)["labels"] == []
+
+    def test_consumption_fields_are_ignored_on_import(self) -> None:
+        record = _rich_record()
+        event = record_to_event(record, 0, session_id="s")
+        event["session_id"] = "tampered"
+        event["labels"] = ["forged"]
+        assert event_to_record(event) == record
 
     def test_provenance_entry_shape(self) -> None:
         event = record_to_event(_rich_record(), 0)
@@ -342,6 +375,20 @@ class TestCli:
         events = [json.loads(line) for line in out]
         assert all(e["schema"] == TRACESIG_SCHEMA for e in events)
         assert [e["seq"] for e in events] == list(range(len(_BATTERY)))
+
+    def test_export_session_id_defaults_to_log_name(self, tmp_path: Path, capsys) -> None:
+        log = tmp_path / "run-2026.jsonl"
+        _write_audit_log(log)
+        assert main(["audit", "export", str(log)]) == 0
+        events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+        assert {e["session_id"] for e in events} == {"run-2026"}
+
+    def test_export_session_id_flag(self, tmp_path: Path, capsys) -> None:
+        log = tmp_path / "audit.jsonl"
+        _write_audit_log(log)
+        assert main(["audit", "export", str(log), "--session-id", "night-shift"]) == 0
+        events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+        assert {e["session_id"] for e in events} == {"night-shift"}
 
     def test_export_to_file(self, tmp_path: Path, capsys) -> None:
         log = tmp_path / "audit.jsonl"

@@ -8,10 +8,12 @@ from APG's [audit log](design.md) — and documents the field mapping.
 
 ```console
 $ apg audit export audit.jsonl --format tracesig -o trace.jsonl
+$ tracesig scan trace.jsonl        # TraceSig 0.2+: core + apg rule packs
 ```
 
 `-` reads the audit log from stdin; omitting `--output` writes the
-events to stdout. Exit codes mirror the rest of the `apg audit` family:
+events to stdout. `--session-id ID` names the session stamped on every
+event (default: the log file's name without extension, `stdin` for `-`). Exit codes mirror the rest of the `apg audit` family:
 `0` ok, `2` missing input file or unwritable output path, `3` malformed
 audit log line. The mapping itself lives in
 `agent_policy_gateway.tracesig_export` (`record_to_event`,
@@ -63,6 +65,8 @@ are serialized sorted, so exports diff cleanly.
 | `input_untrusted` | bool | *derived*: the input label's effective integrity set is non-empty |
 | `input_secret` | bool | *derived*: the input label's effective confidentiality set is non-empty |
 | `flagged` | bool | *derived*: `verdict` is `deny` or `review` |
+| `session_id` | string | *derived*: `--session-id` / the `session_id` argument; else `call.agent_id`; else `"default"` (the CLI defaults to the log file's name) |
+| `labels` | string[] | *derived*: the names in `decision.output_label` (all three stored sets, sorted), plus `untrusted` when the output's effective integrity set is non-empty |
 
 The six label lists are the label's **stored (canonical) dimension
 sets**, not the effective per-dimension unions — that is what makes the
@@ -87,10 +91,19 @@ exports without invented fields.
 
 ### Derived fields
 
-`seq`, `input_untrusted`, `input_secret`, and `flagged` are computed
-*from* the other fields for rule-authoring convenience. They are ignored
-(recomputed, never trusted) when an event is mapped back to an audit
-record.
+`seq`, `input_untrusted`, `input_secret`, `flagged`, `session_id`, and
+`labels` are computed *from* the other fields (or the export call) for
+rule-authoring convenience. They are ignored (recomputed, never trusted)
+when an event is mapped back to an audit record.
+
+`session_id` and `labels` are the two fields TraceSig's trace schema
+needs, so an export is directly scannable: TraceSig groups rules per
+session, and its taint rules run on `labels`. `labels` describes what a
+call *returned* (its output label), which is what provenance rules need:
+the call that brought `web` content in is the source, and a later sink is
+the finding — whether or not the gateway blocked it (the event's
+`verdict` says which). Both fields were added within schema version 1 as
+an additive change, per the compatibility promise above.
 
 ## Losslessness
 

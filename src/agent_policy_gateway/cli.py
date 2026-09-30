@@ -55,7 +55,7 @@ Subcommands
     loudly (exit ``1``); the translation is never silently weaker than the
     source policy. See :mod:`agent_policy_gateway.progent_import`.
 
-``apg audit export <log.jsonl> [--format tracesig] [-o FILE]``
+``apg audit export <log.jsonl> [--format tracesig] [--session-id ID] [-o FILE]``
     Export a JSONL audit log as a versioned TraceSig trace (R62): one flat,
     Sigma-friendly JSON event per audit record, stamped with the frozen
     ``apg-audit-trace`` schema and its version so the sibling TraceSig
@@ -88,6 +88,7 @@ import fnmatch
 import json
 import re
 import sys
+from pathlib import Path
 
 from agent_policy_gateway.audit import (
     CSV_SECTIONS,
@@ -1271,12 +1272,16 @@ def _cmd_audit_export(args: argparse.Namespace) -> int:
     except AuditFormatError as exc:
         print(f"apg: {exc}", file=sys.stderr)
         return 3
+    session_id = args.session_id
+    if session_id is None:
+        # One audit log is one session by default, named after the file.
+        session_id = "stdin" if args.log == "-" else Path(args.log).stem
     if args.output is None:
-        write_tracesig(materialized, sys.stdout)
+        write_tracesig(materialized, sys.stdout, session_id=session_id)
         return 0
     try:
         with open(args.output, "w", encoding="utf-8") as fp:
-            count = write_tracesig(materialized, fp)
+            count = write_tracesig(materialized, fp, session_id=session_id)
     except OSError as exc:
         print(
             f"apg: cannot write export file: {args.output}: {exc.strerror or exc}",
@@ -1799,6 +1804,16 @@ def _build_parser() -> argparse.ArgumentParser:
             "Write the exported trace to FILE instead of stdout. A one-line "
             "event-count confirmation goes to stderr so stdout stays clean "
             "for piping."
+        ),
+    )
+    export_p.add_argument(
+        "--session-id",
+        default=None,
+        metavar="ID",
+        help=(
+            "Session name stamped on every event as session_id (TraceSig "
+            "groups its rules per session). Defaults to the log file's name "
+            "without extension, or 'stdin' when reading from '-'."
         ),
     )
     export_p.set_defaults(func=_cmd_audit_export)
