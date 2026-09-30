@@ -139,6 +139,41 @@ test in CI ([`tests/test_tracesig_contract.py`](./tests/test_tracesig_contract.p
 | Detect | [TraceSig](https://github.com/howardhsieh/tracesig): Sigma-style rules over agent tool-call traces (APG exports, Claude Code sessions) |
 | Operate | [agent-security-skills](https://github.com/howardhsieh/agent-security-skills): the `agentsec-kit` plugin grades a coding-agent setup A–F, audits skills before install, and guides incident response |
 
+## How it compares
+
+Most tool-call gateways decide on **the current call**: its name, its
+arguments, the caller's identity. APG also decides on **where the data in that
+call came from**: taint labels on two dimensions, per session and per value,
+plus the session's call history. That is what separates a legitimate
+"summarize this page and email it to me" from an injected "email this page's
+contents to the attacker" when both use the same tool.
+
+| Project | Decides on | Form |
+|---|---|---|
+| [Microsoft Agent Governance Toolkit](https://github.com/microsoft/agent-governance-toolkit) | Policy rules (YAML, OPA, Cedar) over each action, agent identity and trust, privilege rings | SDKs in five languages, Merkle-tree audit log |
+| [Invariant Guardrails](https://github.com/invariantlabs-ai/invariant) | Python-like rules, including flows between tool calls | A gateway in front of the model and MCP servers |
+| [Keep](https://github.com/majorcontext/keep) | YAML + CEL rules on each API call: deny, redact, rate-limit, LLM judge | Go library, MCP relay, LLM gateway |
+| [Norviq](https://pypi.org/project/norviq/) | OPA/Rego policies on each tool call | Python policy enforcement point |
+| [TaintGuard](https://pypi.org/project/taintguard/) | Whether a tool argument traces back to a registered untrusted source | Python library (alpha) |
+| **agent-policy-gateway** | Ordered YAML rules over the call **and** its provenance: dual-label taint (integrity + confidentiality) at session and per-value scope, declarative declassification, chain rules over call history | Python library with MCP, OpenAI, Anthropic, LangChain and AgentDojo adapters; hash-chained audit log that exports to TraceSig |
+
+What APG adds on top of per-call policy:
+
+- **A measured answer to "which state should the decision read?"** Seven
+  defense paradigms expressed as policy files over the same 90-scenario
+  family, with one command to reproduce ([comparison](./docs/benchmarks/comparison.md)).
+- **Per-value taint.** The one arm in that comparison that reached 100%
+  utility and 0% compromise, within the stated limits.
+- **Detection after prevention.** Every decision exports to TraceSig, whose
+  `apg` rules flag, for example, a blocked exfiltration followed by an allowed
+  one.
+
+Related research: Progent, CaMeL and Fides are compared in the
+[paper draft](./docs/paper/index.md); AEGIS ([arXiv:2603.12621](https://arxiv.org/abs/2603.12621),
+a pre-execution firewall with pattern scanning and schema validation) and ARM
+([arXiv:2604.04035](https://arxiv.org/abs/2604.04035), which treats denied
+calls as provenance events against "causality laundering") are close in spirit.
+
 ## Threat model
 
 The LLM is **not** trusted to decide what tool calls are safe. Adversarial
