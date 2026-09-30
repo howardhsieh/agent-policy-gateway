@@ -149,6 +149,45 @@ lineage secures the *platform* boundary (app-vs-app); APG secures the
 *action* boundary (agent-vs-tools). The two compose: an isolated app's
 tool calls can still be policy-mediated.
 
+**Content-pattern firewalls.** AEGIS (Yuan, Su, and Zhao,
+arXiv:2603.12621) is a framework-agnostic pre-execution firewall: it
+extracts every string from a call's arguments, scans them against 22
+risk patterns in seven categories (SQL, path-traversal and shell
+injection, prompt injection, sensitive files, exfiltration, PII),
+validates arguments against per-tool JSON Schemas, escalates high-risk
+calls to a human, and records each decision in an Ed25519-signed,
+SHA-256 hash-chained audit log. It reports blocking all 48 attacks in
+its suite at a 1.2% false-positive rate over 500 benign calls. Each
+AEGIS decision reads one call's *content*; APG's policies read where
+the call's data *came from* and what the session did before. The two
+fail differently and compose: a pattern scan needs no session state to
+flag a destructive argument, while provenance and history catch
+well-formed calls to permitted sinks — the laundered exfiltration of
+§5.2 is an ordinary-looking sink call whose only tell is the session's
+history.
+
+**Denial feedback.** Chinaei (arXiv:2604.04035) names *causality
+laundering*: injected content makes the agent probe a protected action,
+the refusal itself reveals protected state (a "permission denied"
+rather than "file not found" says the file exists), and a later,
+harmless-looking call carries the inference out. No protected bytes
+flow, so flat provenance tracking misses it. The paper's Agentic
+Reference Monitor (ARM) keeps a provenance graph over calls, returned
+data, individual fields, and denied actions under a five-level
+integrity lattice, and adds a *counterfactual* edge from each denied
+action to the next tool call; a call reachable from a denial through
+such an edge is refused. On three scenarios (causality laundering,
+transitive taint, mixed-provenance fields) ARM blocks all three where a
+flat-provenance baseline misses all three, at sub-millisecond overhead;
+the paper notes that the adjacency rule over-approximates, since it
+also flags benign calls that happen to follow a denial. The attack
+applies to APG as built: its history records denied attempts (§4.3)
+and refusals reach the agent with their rule id and reason, but a
+refusal carries no taint label, so neither the session label nor the
+value ledger sees the inference (§6). ARM's field-level provenance is
+close in spirit to APG's per-value ledger (§4.4); the denial edge is
+the part APG lacks, and §7 plans its measurement.
+
 **Position.** APG's distinguishing commitments are (i) session state as
 a first-class policy input — taint labels *and* an immutable call
 history that survives declassification — and (ii) paradigm-neutrality:
@@ -518,6 +557,14 @@ text, no tool call fired) is invisible to any tool-call gateway; 9 of
 AgentDojo's 35 injection tasks are of this type and are excluded from
 the §5.1 denominators rather than silently counted.
 
+**Refusals are an unlabeled channel.** A refusal is model-visible
+output (`PolicyDenied: refused by rule '<id>': <reason>` in the
+AgentDojo adapter) whose content, and whose mere occurrence, depends on
+protected state, yet it adds no label to the session or the value
+ledger. No family in §5 conditions an attack on a refusal, so the
+compromise rates in Tables 1–4 say nothing about denial-feedback
+leakage (§2, *Denial feedback*); §7 plans that measurement.
+
 **The compared arms are renderings.** The `progent` arm runs real
 Progent-format rules through a mechanical importer but represents the
 paper's symbolic subset, not its LLM-generated dynamic policies; the
@@ -530,12 +577,20 @@ architecturally (§2), not empirically.
 
 ## 7. Future work
 
-The measured next step is pairing prevention with **detection**: APG's
-append-only audit log, exported in a versioned trace schema, becomes
-the input to Sigma-style rule matching over agent tool-call traces
-(the sibling TraceSig project — roadmap item R62). On the measurement
-side: real-model fixtures for §5.4 via the committed record mode, and
-similarity-based value propagation to push the §6 boundary.
+The pairing of prevention with **detection** proposed in the first
+draft has shipped: APG's audit log exports in a versioned trace schema
+(roadmap items R62–R63) that the sibling TraceSig project scans with
+Sigma-style rules over agent tool-call traces, and a contract test
+keeps the two in step in CI (R64). The next measurement is **denial
+feedback** (R66): a denial-probe scenario family on the §5.3 arms;
+*labeled refusals*, where a refusal carries the label of the state its
+rule read (the implicit-flow treatment of classical IFC); and a
+comparison against an ARM-style adjacency rule and a session-wide
+deny-history rule, including whether a few benign calls between probe
+and exfiltration evade adjacency, and what each rule costs in benign
+utility. Beyond that: real-model fixtures for §5.4 via the committed
+record mode, and similarity-based value propagation to push the §6
+boundary.
 
 ## Reproducibility
 
@@ -594,3 +649,8 @@ reference real modules.
 - Yuhao Wu, Franziska Roesner, Tadayoshi Kohno, Ning Zhang, Umar
   Iqbal. *IsolateGPT: An Execution Isolation Architecture for
   LLM-Based Agentic Systems.* NDSS 2025. arXiv:2403.04960.
+- Aojie Yuan, Zhiyuan Su, Yue Zhao. *AEGIS: No Tool Call Left
+  Unchecked — A Pre-Execution Firewall and Audit Layer for AI Agents.*
+  Demo paper. arXiv:2603.12621.
+- Mohammad Hossein Chinaei. *Causality Laundering: Denial-Feedback
+  Leakage in Tool-Calling LLM Agents.* arXiv:2604.04035.

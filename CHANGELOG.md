@@ -6,6 +6,7 @@ on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Paper (`docs/paper/index.md`): related work now covers AEGIS (arXiv:2603.12621, a pre-execution firewall that pattern-scans each call's content) and ARM / causality laundering (arXiv:2604.04035, denial-feedback leakage); a new limitation states that APG's refusals reach the agent unlabeled; future work plans the denial-feedback measurement (roadmap item R66, split into R66a–c).
 - README: how APG compares with other tool-call policy projects (Microsoft Agent Governance Toolkit, Invariant Guardrails, Keep, Norviq, TaintGuard) and related research (AEGIS, ARM).
 - Community files: `CONTRIBUTING.md`, `SECURITY.md` (private reporting for policy bypasses), `CODE_OF_CONDUCT.md`, issue forms and a pull-request template.
 

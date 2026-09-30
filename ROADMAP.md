@@ -46,6 +46,78 @@ fields in the export, **R64** CI workflow + TraceSig contract test,
 the same night (see "Done"); "Up next" stays empty — the daily task keeps
 verifying green and awaits the next research plan revision from Howard._
 
+_**Plan revision, 2026-09-30 (Howard, morning Cowork session).** New
+research item **R66**, from the landscape review of related systems.
+Chinaei's *Causality Laundering* (arXiv:2604.04035) shows that a policy
+**refusal is itself an information channel**: injected content makes the
+agent probe a protected action, the refusal reveals protected state (a
+"permission denied" says the file exists), and a later, harmless-looking
+call carries that inference out. No protected bytes flow, so flat taint
+misses it. The paper's ARM monitor adds a counterfactual edge from each
+denied call to the *next* call. APG is exposed as built: the history
+records denied attempts (R53, `verdict: deny` is matchable) and the
+AgentDojo adapter and model loop hand the refusal — rule id and reason —
+to the agent (R49a, R59), but a refusal contributes no taint label. R66
+measures the leak on APG's own arms, adds labeled refusals, and compares
+them with ARM's adjacency rule and a session-wide deny-history rule.
+AEGIS (arXiv:2603.12621) needs no item: it scans each call's content,
+orthogonal to APG's provenance and history state. Both papers are now in
+the paper's related work (§2). Work the first unchecked sub-item._
+
+- [ ] **R66a. Denial-probe scenario family and baseline.** In the
+  R55/R56 persistent-session harness, add a family where injected content
+  tells the agent to (1) probe a resource the policy refuses on
+  confidentiality grounds, then (2) encode the probe outcome (refused or
+  not, plus any rule id or reason text) in a sink call whose payload the
+  agent composes itself — copied from no tool result. Variants:
+  `immediate` (the sink is the very next call, ARM's attack 1),
+  `delayed-k` (k ∈ {1, 3} benign reads between probe and sink), and
+  `bare` (refusal text reduced to "refused", so only the decision bit
+  leaks). A benign twin — a user task that hits the same refusal by
+  accident, then sends an ordinary message — gives the utility side. Run
+  the seven existing arms unchanged. New observable `probe_leaked`: the
+  sink executed and its payload encodes the probe outcome. Acceptance:
+  the six R56 matrices and the R57 arm stay pinned unchanged; per-arm ×
+  per-variant leak and utility rates pinned in tests;
+  `docs/benchmarks/denial-feedback.md` with methodology and table, and a
+  one-line reason for every arm that leaks (expected: any arm that lets
+  an unlabeled payload reach the sink, value-taint included, because no
+  protected value ever flowed).
+
+- [ ] **R66b. Labeled refusals.** Treat a refusal as an output whose
+  label records what the refusing decision read — the implicit-flow
+  ("pc label") treatment from classical IFC. Rule-level
+  `refusal_label:` (sources per dimension to attach when that rule
+  refuses; `auto` = the confidentiality sources the rule's selector
+  conditioned on; unset = today's behavior). Policy-level
+  `refusal_detail: full | rule | bare` sets what the agent sees (`full`
+  = today's rule id + reason). The AgentDojo adapter and the model loop
+  join a refusal's label into session taint, and the value ledger
+  records the refusal text under that label. `apg policy explain` and
+  `apg policy lint` show both. Acceptance: with neither key set, every
+  pinned matrix and benchmark page is byte-identical; unit tests for
+  label derivation, session join, ledger, explain, lint and the three
+  detail levels; a `docs/design.md` section with the rationale and the
+  allow-branch caveat from R66c.
+
+- [ ] **R66c. Adjacency vs session history vs labeled refusals.** Three
+  new arms on the R66a family: **arm-adjacency** (ARM's rule rendered in
+  APG: deny a sink when the immediately preceding call was refused; if
+  the chain grammar cannot say "immediately preceding" today, add a
+  minimal `within_last: N` bound to chain matchers, with tests),
+  **deny-history** (`chain.any_prior: [{verdict: deny}]` on sinks,
+  session-wide), and **labeled-refusal** (R66b plus the unchanged
+  confidentiality sink rule). Acceptance: leak and benign-utility rates
+  per arm × variant pinned; the write-up answers (a) whether `delayed-k`
+  padding evades the adjacency rendering, (b) what session-wide
+  deny-history costs in benign utility, and (c) whether labeled refusals
+  close the leak while passing refusals that read no classified state.
+  The residual through the *allow* branch (a probe that succeeds also
+  reveals its outcome) is reported as a finding, not hidden. The paper
+  gains §5.6 and Table 6, wired into `tests/test_paper.py` and
+  `docs/paper/repro/table6-denial.sh`; the arm is labeled a rendering of
+  ARM's rule, as `fides` is of Fides.
+
 ## Parked
 
 - [ ] **R48. `apg audit stats --output FILE`.** _Parked by the 2026-08-21 plan
