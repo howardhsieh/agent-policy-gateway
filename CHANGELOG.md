@@ -5,6 +5,9 @@ on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Community files: `CONTRIBUTING.md`, `SECURITY.md` (private reporting for policy bypasses), `CODE_OF_CONDUCT.md`, issue forms and a pull-request template.
+
 ## [0.2.0] — 2026-09-30
 
 Highlights since 0.1.0: dual-label (integrity + confidentiality) taint,

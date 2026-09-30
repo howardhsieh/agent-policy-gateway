@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a policy bypass or other vulnerability
+    url: https://github.com/howardhsieh/agent-policy-gateway/security/advisories/new
+    about: Please report vulnerabilities privately, not as public issues.

@@ -1,0 +1,20 @@
+name: Feature or research idea
+description: Propose a policy feature, adapter, benchmark or measurement.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem or attack does it address?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: Policy syntax sketch, API, or experiment design. Link related work if any.
+  - type: textarea
+    id: evaluation
+    attributes:
+      label: How would we know it works?
+      description: The test, benchmark arm or scenario that should change.
