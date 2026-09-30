@@ -115,7 +115,7 @@ into the **detection** layer:
 
 ```bash
 apg audit export audit.jsonl --format tracesig -o trace.jsonl
-pip install "git+https://github.com/howardhsieh/tracesig@v0.2.0"
+pip install tracesig
 tracesig scan trace.jsonl      # core + apg rule packs, chosen automatically
 ```
 

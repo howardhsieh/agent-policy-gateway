@@ -10,6 +10,10 @@ on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - README: how APG compares with other tool-call policy projects (Microsoft Agent Governance Toolkit, Invariant Guardrails, Keep, Norviq, TaintGuard) and related research (AEGIS, ARM).
 - Community files: `CONTRIBUTING.md`, `SECURITY.md` (private reporting for policy bypasses), `CODE_OF_CONDUCT.md`, issue forms and a pull-request template.
 
+### Fixed
+- `LICENSE` now carries the full Apache-2.0 text; it held only the short notice, so GitHub could not identify the license.
+- README installs TraceSig from PyPI (`pip install tracesig`) now that 0.2.1 is published.
+
 ## [0.2.0] — 2026-09-30
 
 Highlights since 0.1.0: dual-label (integrity + confidentiality) taint,
