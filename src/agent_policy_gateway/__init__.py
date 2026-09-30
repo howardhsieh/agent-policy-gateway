@@ -221,7 +221,7 @@ from agent_policy_gateway.tracesig_export import (
 )
 from agent_policy_gateway.value_flow import ValueLedger
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "AGENT_ID_KWARG",

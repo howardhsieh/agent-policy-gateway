@@ -3,12 +3,13 @@
 This page documents how a new version of `agent-policy-gateway` reaches
 PyPI. There are two release paths:
 
-- The **automated path** — pushing a `v*` tag runs a GitHub Actions
+- The **automated path** — pushing a `v*` tag (or running the
+  workflow by hand from the Actions tab) runs a GitHub Actions
   workflow that builds the sdist + wheel and uploads them via PyPI
   trusted publishing. The workflow file at
-  `.github/workflows/publish.yml` is the deliverable of roadmap
-  item **R14b** and is not yet on `main`; until it ships, the
-  manual fallback in §3 is the only path.
+  `.github/workflows/publish.yml` shipped with roadmap item **R14b**
+  and published 0.1.0; the trusted publisher on PyPI is keyed on
+  that filename and the `pypi` environment.
 - The **manual fallback** — `python -m build` + `twine upload` from
   a developer machine. This works today and will remain the
   documented disaster-recovery path even after R14b lands.

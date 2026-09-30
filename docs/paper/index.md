@@ -174,7 +174,7 @@ lives in [`docs/threat-model.md`](../threat-model.md).
 
 ## 4. The gateway
 
-APG is a small Python library (~30 modules, 1,559 tests) built around
+APG is a small Python library (~30 modules, 1,600+ tests) built around
 `Gateway.execute(call) → Decision`. Policies are ordered first-match
 rules in YAML; a rule's selector can condition on the tool name,
 argument patterns, the session's taint labels, per-argument value

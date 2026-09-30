@@ -1,5 +1,7 @@
 # agent-policy-gateway
 
+[![CI](https://github.com/howardhsieh/agent-policy-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/howardhsieh/agent-policy-gateway/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/agent-policy-gateway)](https://pypi.org/project/agent-policy-gateway/)
 [![License](https://img.shields.io/github/license/howardhsieh/agent-policy-gateway)](./LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](./pyproject.toml)
 [![Semgrep](https://github.com/howardhsieh/agent-policy-gateway/actions/workflows/semgrep.yml/badge.svg)](https://github.com/howardhsieh/agent-policy-gateway/actions/workflows/semgrep.yml)
@@ -8,6 +10,10 @@ A policy-enforcement and information-flow-control (IFC) gateway for AI agent
 tool calls — a **reference monitor** that sits between the agent and its tools,
 enforces declarative YAML policies, tracks taint across calls, and writes an
 append-only audit log.
+
+```bash
+pip install agent-policy-gateway
+```
 
 **Headline result.** In a head-to-head measurement of defense paradigms on a
 shared 90-scenario long-horizon prompt-injection family — Progent-style
@@ -100,6 +106,38 @@ guarantee structural rather than emergent. Details in
 4. **Multi-protocol adapters.** The same policy language mediates tool
    catalogs from MCP, OpenAI function calling, Anthropic tool use, LangChain,
    and the [AgentDojo](./docs/benchmarks/agentdojo.md) benchmark suite.
+
+## Prevent, detect, operate
+
+APG is the **prevention** layer of an open agent-security stack. Every
+decision it makes lands in the audit log, and the audit log exports straight
+into the **detection** layer:
+
+```bash
+apg audit export audit.jsonl --format tracesig -o trace.jsonl
+pip install tracesig
+tracesig scan trace.jsonl      # core + apg rule packs, chosen automatically
+```
+
+```text
+[CRIT] TS-EXF-001 — Untrusted web content followed by outbound email
+  session: denied-injection   category: exfiltration
+  timeline:
+    #0    web_fetch  {"url": "https://research.example/widgets"}  labels=['untrusted', 'web']  verdict=allow
+    #2    send_email  {"body": "record WID-7 contents", "subject": "requested data", "to": "attacker@e…  labels=['untrusted', 'web']  verdict=deny
+```
+
+TraceSig's `apg` pack reads the gateway's own verdicts: repeated denials in a
+session (an agent pushing against the policy), untrusted input reaching an
+*allowed* sink (a policy gap), a blocked call followed by an allowed one (route
+around the block), and declassifications. The pairing is pinned by a contract
+test in CI ([`tests/test_tracesig_contract.py`](./tests/test_tracesig_contract.py)).
+
+| Layer | Project |
+|---|---|
+| Prevent | **agent-policy-gateway**: policies and taint tracking in front of tool calls |
+| Detect | [TraceSig](https://github.com/howardhsieh/tracesig): Sigma-style rules over agent tool-call traces (APG exports, Claude Code sessions) |
+| Operate | [agent-security-skills](https://github.com/howardhsieh/agent-security-skills): the `agentsec-kit` plugin grades a coding-agent setup A–F, audits skills before install, and guides incident response |
 
 ## Threat model
 

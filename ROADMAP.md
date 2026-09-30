@@ -36,7 +36,15 @@ project (detection). Cadence unchanged (2026-08-25 rules): one item per day,
 work the FIRST unchecked item top-down._
 
 _(The 2026-09-14 plan queue is complete as of 2026-09-21 — R57 through
-R62 are all in "Done". Awaiting the next plan revision from Howard.)_
+R62 are all in "Done".)_
+
+_**Plan revision, 2026-09-30 (Howard, overnight session).** Integrate the
+three sibling projects (APG = prevent, TraceSig = detect,
+agent-security-skills = operate) and ship: **R63** TraceSig consumption
+fields in the export, **R64** CI workflow + TraceSig contract test,
+**R65** 0.2.0 release prep and README stack section. All three were done
+the same night (see "Done"); "Up next" stays empty — the daily task keeps
+verifying green and awaits the next research plan revision from Howard._
 
 ## Parked
 
@@ -51,6 +59,35 @@ R62 are all in "Done". Awaiting the next plan revision from Howard.)_
 ---
 
 ## Done
+
+- [x] **R65. 0.2.0 release prep and the prevent/detect/operate README
+  section.** _2026-09-30_ — version 0.2.0 in `pyproject.toml` and
+  `__version__`; `CHANGELOG.md` cut from `[Unreleased]` with a highlights
+  paragraph; README gains CI and PyPI badges, `pip install
+  agent-policy-gateway`, and a "Prevent, detect, operate" section showing
+  `apg audit export` → `tracesig scan` with real output; `docs/release.md`
+  no longer says R14b is pending; the paper's test count reads "1,600+".
+  Publishing runs through the existing `publish.yml` (trusted publisher
+  already configured on PyPI for 0.1.0).
+
+- [x] **R64. CI workflow and TraceSig contract test.** _2026-09-30_ —
+  `.github/workflows/ci.yml` runs ruff, mypy, pytest (3.10–3.13), the
+  strict mkdocs build, and a `tracesig-contract` job that installs
+  TraceSig 0.2.0 (pinned by commit) and runs
+  `tests/test_tracesig_contract.py` plus `tracesig scan` over the committed
+  exports (benign quiet at `--fail-on low`; denied injection exits 2 at
+  `--fail-on critical`). The contract test skips when TraceSig is absent,
+  so the local suite is unchanged without it.
+
+- [x] **R63. TraceSig consumption fields in the audit-trace export.**
+  _2026-09-30_ — every exported event also carries `session_id` and
+  `labels` (derived, ignored on import, lossless round trip intact,
+  additive within `schema_version` 1). `labels` = output-label names plus
+  `untrusted` when the output's effective integrity set is non-empty;
+  `session_id` from `apg audit export --session-id` (default: log file
+  name / `stdin`) or the new `session_id=` keyword, falling back to the
+  agent id. Example exports regenerated one session per scenario. Tests
+  1614 → 1625 collected (+6 export tests, +5 contract tests).
 
 - [x] **R62. Audit-trace export for TraceSig.** _2026-09-21_ — the
   prevention/detection pairing has an interchange format now. New

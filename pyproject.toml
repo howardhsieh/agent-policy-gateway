@@ -1,6 +1,6 @@
 [project]
 name = "agent-policy-gateway"
-version = "0.1.0"
+version = "0.2.0"
 description = "Policy enforcement and taint tracking for AI agent tool calls."
 readme = "README.md"
 license = { text = "Apache-2.0" }
