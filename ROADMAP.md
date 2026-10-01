@@ -64,26 +64,6 @@ AEGIS (arXiv:2603.12621) needs no item: it scans each call's content,
 orthogonal to APG's provenance and history state. Both papers are now in
 the paper's related work (§2). Work the first unchecked sub-item._
 
-- [ ] **R66a. Denial-probe scenario family and baseline.** In the
-  R55/R56 persistent-session harness, add a family where injected content
-  tells the agent to (1) probe a resource the policy refuses on
-  confidentiality grounds, then (2) encode the probe outcome (refused or
-  not, plus any rule id or reason text) in a sink call whose payload the
-  agent composes itself — copied from no tool result. Variants:
-  `immediate` (the sink is the very next call, ARM's attack 1),
-  `delayed-k` (k ∈ {1, 3} benign reads between probe and sink), and
-  `bare` (refusal text reduced to "refused", so only the decision bit
-  leaks). A benign twin — a user task that hits the same refusal by
-  accident, then sends an ordinary message — gives the utility side. Run
-  the seven existing arms unchanged. New observable `probe_leaked`: the
-  sink executed and its payload encodes the probe outcome. Acceptance:
-  the six R56 matrices and the R57 arm stay pinned unchanged; per-arm ×
-  per-variant leak and utility rates pinned in tests;
-  `docs/benchmarks/denial-feedback.md` with methodology and table, and a
-  one-line reason for every arm that leaks (expected: any arm that lets
-  an unlabeled payload reach the sink, value-taint included, because no
-  protected value ever flowed).
-
 - [ ] **R66b. Labeled refusals.** Treat a refusal as an output whose
   label records what the refusing decision read — the implicit-flow
   ("pc label") treatment from classical IFC. Rule-level
@@ -131,6 +111,22 @@ the paper's related work (§2). Work the first unchecked sub-item._
 ---
 
 ## Done
+
+- [x] **R66a. Denial-probe scenario family and baseline.** _2026-10-01_ —
+  new module `agent_policy_gateway.denial_benchmark`: the ARM-style
+  denial-feedback family in the R55 persistent-session shape (read secret
+  → probe a sink with the secret as payload, trusted recipient → optional
+  padding → a report sink call whose payload the agent composes from the
+  probe outcome, copied from no tool result), variants
+  `immediate`/`delayed-1`/`delayed-3`/`bare` × 3 sinks plus benign twins,
+  new observable `probe_leaked`, the seven R56/R57 arms byte-unchanged.
+  Measured and pinned (`docs/benchmarks/denial-feedback.md`): only
+  `fides` holds the leak (0.0%, at 0.0% benign utility); every other arm
+  leaks 100.0% across all variants — `apg-value-taint` refuses the probe
+  100% yet leaks the rule id and reason verbatim, the implicit flow R66
+  exists to measure; five arms execute the probe outright (the R56
+  `exfil` residual). The six R56 matrices and the R57 arm stayed pinned
+  unchanged. Tests 1625 → 1657 collected.
 
 - [x] **R65. 0.2.0 release prep and the prevent/detect/operate README
   section.** _2026-09-30_ — version 0.2.0 in `pyproject.toml` and

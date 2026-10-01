@@ -62,6 +62,7 @@ nav:
       - Long-horizon: benchmarks/stateful.md
       - Comparison: benchmarks/comparison.md
       - Model-in-the-loop: benchmarks/model-loop.md
+      - Denial feedback: benchmarks/denial-feedback.md
       - Overhead: benchmarks/overhead.md
   - Paper: paper/index.md
   - TraceSig export: tracesig-export.md
